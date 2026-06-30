@@ -10,8 +10,10 @@ Poker High Card is a small Streamlit app that helps a poker table decide the fir
 - Draw one unique card per player.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
-- Show every player's card.
-- Show the winner.
+- Show every player's card in an easy-to-scan card layout.
+- Highlight the winner.
+- Show a ranked results table with comparison details.
+- Warn when multiple players have the same name.
 - Reset the draw and start again.
 
 ## Card Strength
