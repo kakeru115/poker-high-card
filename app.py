@@ -6,7 +6,6 @@ import string
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 # Poker high-card ordering for ranks and suits.
@@ -31,7 +30,6 @@ TABLE_MODE = "Table mode"
 PRIVATE_DEVICE_MODE = "Private device mode"
 
 TABLES_FILE = Path("private_tables.json")
-WAITING_REFRESH_SECONDS = 10
 
 
 def create_deck():
@@ -219,20 +217,6 @@ def leave_private_table():
     st.query_params.clear()
 
 
-def refresh_waiting_table():
-    """Refresh waiting private tables so every device sees joins and deals."""
-    components.html(
-        f"""
-        <script>
-            setTimeout(function() {{
-                window.parent.location.reload();
-            }}, {WAITING_REFRESH_SECONDS * 1000});
-        </script>
-        """,
-        height=0,
-    )
-
-
 def show_card(result, is_winner=False):
     """Display one player's card as a small card-style panel."""
     card = result["card"]
@@ -408,9 +392,10 @@ def render_private_device_mode():
                 deal_private_table(table_code)
                 st.rerun()
         else:
-            st.caption("This page refreshes while waiting. Cards will appear when the host deals.")
+            st.caption("Press Refresh table to check whether the host has dealt.")
 
-        refresh_waiting_table()
+        if st.button("Refresh table"):
+            st.rerun()
 
     else:
         st.subheader("Your Card")
