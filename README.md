@@ -2,6 +2,8 @@
 
 Poker High Card is a small Streamlit app that helps a poker table decide the first dealer or button position. Each player draws one card, and the strongest card wins.
 
+Live app: https://poker-high-card.streamlit.app/
+
 ## Features
 
 - Choose 2 to 10 players.
