@@ -8,6 +8,8 @@ Poker High Card is a small Streamlit app that helps a poker table decide the fir
 - Enter custom player names.
 - Build a standard 52-card deck.
 - Draw one unique card per player.
+- Choose Table mode to show cards only and let everyone judge together.
+- Choose Auto judge mode to show the winner and ranking automatically.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
 - Show every player's card in an easy-to-scan card layout.

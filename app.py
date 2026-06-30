@@ -21,6 +21,9 @@ SUIT_SYMBOLS = {
 
 RED_SUITS = ["Hearts", "Diamonds"]
 
+AUTO_JUDGE_MODE = "Auto judge"
+TABLE_MODE = "Table mode"
+
 
 def create_deck():
     """Create a standard 52-card deck."""
@@ -135,6 +138,13 @@ with st.sidebar:
     st.write("Rank: A > K > Q > J > 10 > 9 > ... > 2")
     st.write("Suit: Spades > Hearts > Diamonds > Clubs")
 
+app_mode = st.radio(
+    "Play style",
+    [TABLE_MODE, AUTO_JUDGE_MODE],
+    horizontal=True,
+    help="Table mode shows the cards only. Auto judge also shows the winner and ranking.",
+)
+
 number_of_players = st.slider("Number of players", min_value=2, max_value=10, value=6)
 
 # If the player count changes, clear old results so the draw always matches the table.
@@ -163,36 +173,49 @@ with reset_button:
 
 if "results" in st.session_state:
     results = st.session_state.results
-    winner = find_winner(results)
-    ranked_results = sort_results_by_strength(results)
 
-    st.subheader("Winner")
+    if app_mode == TABLE_MODE:
+        st.subheader("Table Draw")
+        st.info("Everyone drew from the same shuffled deck. Compare the cards together at the table.")
 
-    winning_card = winner["card"]
-    st.success(f"{winner['player']} wins with {format_card(winning_card)}.")
-    st.caption(
-        "This card wins because cards are compared by rank first, then by suit if ranks are tied."
-    )
+        card_columns = st.columns(2)
+        for index, result in enumerate(results):
+            with card_columns[index % 2]:
+                show_card(result)
 
-    st.subheader("Cards Drawn")
+        st.caption("No automatic winner is shown in Table mode.")
 
-    card_columns = st.columns(2)
-    for index, result in enumerate(results):
-        with card_columns[index % 2]:
-            show_card(result, is_winner=result == winner)
+    else:
+        winner = find_winner(results)
+        ranked_results = sort_results_by_strength(results)
 
-    st.subheader("Ranking")
+        st.subheader("Winner")
 
-    table_rows = []
-    for position, result in enumerate(ranked_results, start=1):
-        card = result["card"]
-        table_rows.append(
-            {
-                "Place": position,
-                "Player": result["player"],
-                "Card": format_card(card),
-                "Comparison": strength_label(card),
-            }
+        winning_card = winner["card"]
+        st.success(f"{winner['player']} wins with {format_card(winning_card)}.")
+        st.caption(
+            "This card wins because cards are compared by rank first, then by suit if ranks are tied."
         )
 
-    st.dataframe(table_rows, hide_index=True, use_container_width=True)
+        st.subheader("Cards Drawn")
+
+        card_columns = st.columns(2)
+        for index, result in enumerate(results):
+            with card_columns[index % 2]:
+                show_card(result, is_winner=result == winner)
+
+        st.subheader("Ranking")
+
+        table_rows = []
+        for position, result in enumerate(ranked_results, start=1):
+            card = result["card"]
+            table_rows.append(
+                {
+                    "Place": position,
+                    "Player": result["player"],
+                    "Card": format_card(card),
+                    "Comparison": strength_label(card),
+                }
+            )
+
+        st.dataframe(table_rows, hide_index=True, use_container_width=True)
