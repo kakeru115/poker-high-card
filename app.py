@@ -385,10 +385,6 @@ def render_private_device_mode():
     st.write(f"Players: {len(table['players'])} / {table['number_of_players']}")
 
     if table["status"] == "waiting":
-        if len(table["players"]) >= table["number_of_players"]:
-            deal_private_table(table_code)
-            st.rerun()
-
         st.write("Waiting for everyone to join.")
         st.table(
             [
@@ -402,18 +398,17 @@ def render_private_device_mode():
 
         is_host = table["host_id"] == player_id
         if is_host:
-            if len(table["players"]) < 2:
-                st.warning("At least two players are needed before dealing.")
+            if len(table["players"]) < table["number_of_players"]:
+                players_needed = table["number_of_players"] - len(table["players"])
+                st.warning(f"Waiting for {players_needed} more player(s) before dealing.")
             else:
-                st.caption(
-                    "Cards will deal automatically when the table is full. You can also start now."
-                )
+                st.success("Everyone is seated. Deal cards when the table is ready.")
 
-            if len(table["players"]) >= 2 and st.button("Start now", type="primary"):
+            if len(table["players"]) >= table["number_of_players"] and st.button("Deal cards", type="primary"):
                 deal_private_table(table_code)
                 st.rerun()
         else:
-            st.caption("This page refreshes while waiting. Cards will appear when the host starts or the table fills.")
+            st.caption("This page refreshes while waiting. Cards will appear when the host deals.")
 
         refresh_waiting_table()
 
