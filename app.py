@@ -6,6 +6,7 @@ import string
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # Poker high-card ordering for ranks and suits.
@@ -30,6 +31,7 @@ TABLE_MODE = "Table mode"
 PRIVATE_DEVICE_MODE = "Private device mode"
 
 TABLES_FILE = Path("private_tables.json")
+WAITING_REFRESH_SECONDS = 10
 
 
 def create_deck():
@@ -217,6 +219,20 @@ def leave_private_table():
     st.query_params.clear()
 
 
+def refresh_waiting_table():
+    """Refresh waiting private tables so every device sees joins and deals."""
+    components.html(
+        f"""
+        <script>
+            setTimeout(function() {{
+                window.parent.location.reload();
+            }}, {WAITING_REFRESH_SECONDS * 1000});
+        </script>
+        """,
+        height=0,
+    )
+
+
 def show_card(result, is_winner=False):
     """Display one player's card as a small card-style panel."""
     card = result["card"]
@@ -362,6 +378,10 @@ def render_private_device_mode():
     st.write(f"Players: {len(table['players'])} / {table['number_of_players']}")
 
     if table["status"] == "waiting":
+        if len(table["players"]) >= table["number_of_players"]:
+            deal_private_table(table_code)
+            st.rerun()
+
         st.write("Waiting for everyone to join.")
         st.table(
             [
@@ -377,11 +397,18 @@ def render_private_device_mode():
         if is_host:
             if len(table["players"]) < 2:
                 st.warning("At least two players are needed before dealing.")
-            elif st.button("Deal private cards", type="primary"):
+            else:
+                st.caption(
+                    "Cards will deal automatically when the table is full. You can also start now."
+                )
+
+            if len(table["players"]) >= 2 and st.button("Start now", type="primary"):
                 deal_private_table(table_code)
                 st.rerun()
         else:
-            st.caption("The host will deal when everyone is ready.")
+            st.caption("This page refreshes while waiting. Cards will appear when the host starts or the table fills.")
+
+        refresh_waiting_table()
 
     else:
         st.subheader("Your Card")

@@ -52,7 +52,7 @@ streamlit run app.py
 
 Then open the local URL shown in your terminal.
 
-For Private device mode, have each player open the app from their own device or browser session. The host creates a table code, everyone joins that same code, and each player sees only their own card after the host deals.
+For Private device mode, have each player open the app from their own device or browser session. The host creates a table code, everyone joins that same code, and each player sees only their own card. Cards are dealt automatically when the table is full, or the host can start once at least two players have joined.
 
 ## GitHub
 
