@@ -169,7 +169,7 @@ def join_private_table(table_code, player_name):
     table = tables.get(table_code)
 
     if table is None:
-        return "That table code was not found."
+        return "That table code was not found. It may have expired, so create a new table and share the new code."
 
     if table["status"] == "dealt":
         return "Cards have already been dealt for that table."
@@ -358,8 +358,15 @@ def render_private_device_mode():
     table = tables.get(table_code)
 
     if table is None:
-        st.error("This table no longer exists.")
-        st.button("Leave table", on_click=leave_private_table)
+        st.warning(
+            "This table code was not found. It may have expired after the app restarted or redeployed."
+        )
+        st.write("Create a new table and have everyone join the new code.")
+
+        if st.button("Create or join another table", type="primary"):
+            leave_private_table()
+            st.rerun()
+
         return
 
     player_id = st.session_state.private_player_id
