@@ -8,6 +8,7 @@ Poker High Card is a small Streamlit app that helps a poker table decide the fir
 - Enter custom player names.
 - Build a standard 52-card deck.
 - Draw one unique card per player.
+- Choose Private device mode so each person can join from their own browser and see only their own card.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Compare cards by poker high-card rules.
@@ -48,6 +49,8 @@ streamlit run app.py
 ```
 
 Then open the local URL shown in your terminal.
+
+For Private device mode, have each player open the app from their own device or browser session. The host creates a table code, everyone joins that same code, and each player sees only their own card after the host deals.
 
 ## GitHub
 

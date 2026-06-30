@@ -7,3 +7,4 @@ env/
 .env
 .DS_Store
 .streamlit/secrets.toml
+private_tables.json
