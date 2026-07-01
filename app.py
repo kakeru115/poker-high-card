@@ -1,11 +1,13 @@
 import html
 import json
 import random
+import re
 import secrets
 import string
 from pathlib import Path
 
 import streamlit as st
+from filelock import FileLock
 
 
 # Poker high-card ordering for ranks and suits.
@@ -30,6 +32,8 @@ TABLE_MODE = "Table mode"
 PRIVATE_DEVICE_MODE = "Private device mode"
 
 TABLES_FILE = Path("private_tables.json")
+TABLES_TEMP_FILE = Path("private_tables.tmp")
+TABLES_LOCK = FileLock("private_tables.lock", timeout=5)
 
 
 def create_deck():
@@ -114,17 +118,28 @@ def reset_draw():
 
 def load_private_tables():
     """Load private tables from a small local JSON file."""
-    if not TABLES_FILE.exists():
-        return {}
+    with TABLES_LOCK:
+        if not TABLES_FILE.exists():
+            return {}
 
-    with TABLES_FILE.open("r", encoding="utf-8") as file:
-        return json.load(file)
+        with TABLES_FILE.open("r", encoding="utf-8") as file:
+            return json.load(file)
 
 
 def save_private_tables(tables):
     """Save private tables so different browsers can share the same table."""
-    with TABLES_FILE.open("w", encoding="utf-8") as file:
-        json.dump(tables, file, indent=2)
+    with TABLES_LOCK:
+        # Write a complete temporary file first, then replace the old file at once.
+        # This prevents another browser from reading a half-written table file.
+        with TABLES_TEMP_FILE.open("w", encoding="utf-8") as file:
+            json.dump(tables, file, indent=2)
+
+        TABLES_TEMP_FILE.replace(TABLES_FILE)
+
+
+def clean_table_code(table_code):
+    """Normalize a pasted table code and ignore spaces or punctuation."""
+    return re.sub(r"[^A-Z0-9]", "", table_code.upper())
 
 
 def make_table_code():
@@ -135,75 +150,79 @@ def make_table_code():
 
 def create_private_table(number_of_players, host_name):
     """Create a new private table and add the host as the first player."""
-    tables = load_private_tables()
-    table_code = make_table_code()
-
-    while table_code in tables:
+    with TABLES_LOCK:
+        tables = load_private_tables()
         table_code = make_table_code()
 
-    player_id = st.session_state.private_player_id
-    tables[table_code] = {
-        "host_id": player_id,
-        "number_of_players": number_of_players,
-        "status": "waiting",
-        "players": [
-            {
-                "id": player_id,
-                "name": host_name,
-                "card": None,
-            }
-        ],
-    }
+        while table_code in tables:
+            table_code = make_table_code()
 
-    save_private_tables(tables)
+        player_id = st.session_state.private_player_id
+        tables[table_code] = {
+            "host_id": player_id,
+            "number_of_players": number_of_players,
+            "status": "waiting",
+            "players": [
+                {
+                    "id": player_id,
+                    "name": host_name,
+                    "card": None,
+                }
+            ],
+        }
+
+        save_private_tables(tables)
+
     st.session_state.private_table_code = table_code
     st.query_params["table"] = table_code
-    st.query_params["pid"] = player_id
 
 
 def join_private_table(table_code, player_name):
     """Join an existing private table from a different browser session."""
-    tables = load_private_tables()
-    table = tables.get(table_code)
+    table_code = clean_table_code(table_code)
+    if not table_code:
+        return "Enter a table code."
 
-    if table is None:
-        return "That table code was not found. It may have expired, so create a new table and share the new code."
+    with TABLES_LOCK:
+        tables = load_private_tables()
+        table = tables.get(table_code)
 
-    if table["status"] == "dealt":
-        return "Cards have already been dealt for that table."
+        if table is None:
+            return "That table code was not found. Check the code with the host and try again."
 
-    player_id = st.session_state.private_player_id
-    for player in table["players"]:
-        if player["id"] == player_id:
-            player["name"] = player_name
+        if table["status"] == "dealt":
+            return "Cards have already been dealt for that table."
+
+        player_id = st.session_state.private_player_id
+        for player in table["players"]:
+            if player["id"] == player_id:
+                player["name"] = player_name
+                save_private_tables(tables)
+                break
+        else:
+            if len(table["players"]) >= table["number_of_players"]:
+                return "That table is already full."
+
+            table["players"].append({"id": player_id, "name": player_name, "card": None})
             save_private_tables(tables)
-            st.session_state.private_table_code = table_code
-            st.query_params["table"] = table_code
-            st.query_params["pid"] = player_id
-            return None
 
-    if len(table["players"]) >= table["number_of_players"]:
-        return "That table is already full."
-
-    table["players"].append({"id": player_id, "name": player_name, "card": None})
-    save_private_tables(tables)
     st.session_state.private_table_code = table_code
     st.query_params["table"] = table_code
-    st.query_params["pid"] = player_id
     return None
 
 
 def deal_private_table(table_code):
     """Deal one card to every player in a private table."""
-    tables = load_private_tables()
-    table = tables.get(table_code)
+    with TABLES_LOCK:
+        tables = load_private_tables()
+        table = tables.get(table_code)
 
-    if table is None:
-        return
+        if table is None:
+            return
 
-    table["players"] = draw_cards_for_players(table["players"])
-    table["status"] = "dealt"
-    save_private_tables(tables)
+        table["players"] = draw_cards_for_players(table["players"])
+        table["status"] = "dealt"
+        save_private_tables(tables)
 
 
 def redeal_private_table(table_code):
@@ -218,32 +237,65 @@ def leave_private_table():
 
 
 def show_card(result, is_winner=False):
-    """Display one player's card as a small card-style panel."""
+    """Display one player's card as a familiar paper playing card."""
     card = result["card"]
     player_name = html.escape(result["player"])
-    border_color = "#0f766e" if is_winner else "#d0d7de"
-    background = "#ecfdf5" if is_winner else "#ffffff"
+    border_color = "#15803d" if is_winner else "#c8c8c8"
     winner_label = "Winner" if is_winner else "Drawn card"
+    rank = card["rank"]
+    symbol = SUIT_SYMBOLS[card["suit"]]
+    color = card_color(card)
 
     st.markdown(
         f"""
-        <div style="
-            border: 1px solid {border_color};
-            border-radius: 8px;
-            background: {background};
-            padding: 14px;
-            min-height: 150px;
-        ">
-            <div style="font-size: 0.85rem; color: #57606a;">{winner_label}</div>
-            <div style="font-weight: 700; margin-top: 4px;">{player_name}</div>
+        <div style="text-align: center; margin: 8px 0 22px;">
+            <div style="font-size: 0.8rem; color: #57606a;">{winner_label}</div>
+            <div style="font-weight: 700; margin: 2px 0 9px;">{player_name}</div>
             <div style="
-                color: {card_color(card)};
-                font-size: 2.4rem;
-                font-weight: 800;
-                line-height: 1.1;
-                margin-top: 14px;
-            ">{card['rank']} {SUIT_SYMBOLS[card['suit']]}</div>
-            <div style="color: #57606a; margin-top: 8px;">{card['suit']}</div>
+                position: relative;
+                box-sizing: border-box;
+                width: min(100%, 180px);
+                aspect-ratio: 5 / 7;
+                margin: 0 auto;
+                border: 2px solid {border_color};
+                border-radius: 8px;
+                background: #fffefb;
+                color: {color};
+                box-shadow: 0 5px 14px rgba(31, 41, 55, 0.16);
+                font-family: Georgia, 'Times New Roman', serif;
+            ">
+                <div style="
+                    position: absolute;
+                    top: 10px;
+                    left: 11px;
+                    font-size: 1.65rem;
+                    font-weight: 700;
+                    line-height: 0.85;
+                ">
+                    <div>{rank}</div>
+                    <div style="font-size: 1.35rem; margin-top: 6px;">{symbol}</div>
+                </div>
+                <div style="
+                    position: absolute;
+                    inset: 0;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 5rem;
+                ">{symbol}</div>
+                <div style="
+                    position: absolute;
+                    right: 11px;
+                    bottom: 10px;
+                    transform: rotate(180deg);
+                    font-size: 1.65rem;
+                    font-weight: 700;
+                    line-height: 0.85;
+                ">
+                    <div>{rank}</div>
+                    <div style="font-size: 1.35rem; margin-top: 6px;">{symbol}</div>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -251,28 +303,46 @@ def show_card(result, is_winner=False):
 
 
 def show_hidden_card(player_name):
-    """Show another player's card slot without revealing their actual card."""
+    """Show a playing-card back without revealing the other player's card."""
     safe_name = html.escape(player_name)
 
     st.markdown(
         f"""
-        <div style="
-            border: 1px solid #d0d7de;
-            border-radius: 8px;
-            background: #f6f8fa;
-            padding: 14px;
-            min-height: 150px;
-        ">
-            <div style="font-size: 0.85rem; color: #57606a;">Hidden card</div>
-            <div style="font-weight: 700; margin-top: 4px;">{safe_name}</div>
+        <div style="text-align: center; margin: 8px 0 22px;">
+            <div style="font-size: 0.8rem; color: #57606a;">Hidden card</div>
+            <div style="font-weight: 700; margin: 2px 0 9px;">{safe_name}</div>
             <div style="
-                color: #57606a;
-                font-size: 2.4rem;
-                font-weight: 800;
-                line-height: 1.1;
-                margin-top: 14px;
-            ">??</div>
-            <div style="color: #57606a; margin-top: 8px;">Only they can see it</div>
+                box-sizing: border-box;
+                width: min(100%, 180px);
+                aspect-ratio: 5 / 7;
+                margin: 0 auto;
+                border: 7px solid #fffefb;
+                outline: 1px solid #b8b8b8;
+                border-radius: 8px;
+                background: #2456a6;
+                box-shadow: 0 5px 14px rgba(31, 41, 55, 0.16);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #ffffff;
+                font-family: Georgia, 'Times New Roman', serif;
+            ">
+                <div style="
+                    width: calc(100% - 12px);
+                    height: calc(100% - 12px);
+                    border: 2px solid rgba(255, 255, 255, 0.85);
+                    border-radius: 4px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 1.7rem;
+                    line-height: 1.7;
+                    letter-spacing: 0;
+                ">♠ ♥<br>♦ ♣</div>
+            </div>
+            <div style="color: #57606a; font-size: 0.8rem; margin-top: 8px;">
+                Only they can see the front
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -287,12 +357,15 @@ def render_private_device_mode():
     )
 
     if "private_player_id" not in st.session_state:
-        st.session_state.private_player_id = st.query_params.get("pid", secrets.token_hex(8))
+        st.session_state.private_player_id = secrets.token_hex(8)
 
-    if "private_table_code" not in st.session_state and "table" in st.query_params:
-        st.session_state.private_table_code = st.query_params["table"].upper()
+    # Older links included a private player ID. Remove it so each browser gets
+    # its own identity instead of accidentally joining as the host.
+    if "pid" in st.query_params:
+        del st.query_params["pid"]
 
     table_code = st.session_state.get("private_table_code")
+    shared_table_code = clean_table_code(st.query_params.get("table", ""))
 
     if table_code is None:
         joined_or_created = False
@@ -320,7 +393,12 @@ def render_private_device_mode():
 
             with join_column:
                 st.markdown("**Join a table**")
-                join_code = st.text_input("Table code", key="join_code").upper().strip()
+                join_code = st.text_input(
+                    "Table code",
+                    value=shared_table_code,
+                    key="join_code",
+                    max_chars=12,
+                )
                 join_name = st.text_input("Your name", value="Player", key="join_name")
 
                 if st.button("Join table"):
@@ -366,6 +444,9 @@ def render_private_device_mode():
         return
 
     st.metric("Table code", table_code)
+    st.caption(
+        "Share this code or the current page URL. Each person must press Join table on their own device."
+    )
     st.write(f"Players: {len(table['players'])} / {table['number_of_players']}")
 
     if table["status"] == "waiting":

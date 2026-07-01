@@ -15,7 +15,7 @@ Live app: https://poker-high-card.streamlit.app/
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
-- Show every player's card in an easy-to-scan card layout.
+- Show every player's card as a familiar paper playing card.
 - Highlight the winner.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
@@ -52,7 +52,9 @@ streamlit run app.py
 
 Then open the local URL shown in your terminal.
 
-For Private device mode, have each player open the app from their own device or browser session. The host creates a table code, everyone joins that same code, and each player sees only their own card. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
+For Private device mode, have each player open the app from their own device or browser session. The host creates a table, then shares the six-character code or the page URL. The shared URL contains only the table code, so every player still joins with their own name and receives a separate private identity. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
+
+Table updates use a file lock and an atomic file replacement so two players joining at nearly the same time do not overwrite each other.
 
 Private table codes are temporary. If the app restarts or redeploys, create a new table and share the new code.
 

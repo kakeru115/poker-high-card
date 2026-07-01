@@ -8,3 +8,5 @@ env/
 .DS_Store
 .streamlit/secrets.toml
 private_tables.json
+private_tables.lock
+private_tables.tmp
