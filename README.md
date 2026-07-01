@@ -4,13 +4,16 @@ Poker High Card is a small Streamlit app that helps a poker table decide the fir
 
 Live app: https://poker-high-card.streamlit.app/
 
+![Poker High Card title screen](assets/poker-title.png)
+
 ## Features
 
 - Choose 2 to 10 players.
 - Enter custom player names.
 - Build a standard 52-card deck.
 - Draw one unique card per player.
-- Open with a dedicated title screen before choosing a play style.
+- Choose a play style directly from the title screen.
+- Remember your nickname in the browser and prefill your player name.
 - Choose Private device mode so each person can join from their own browser and see only their own card.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
@@ -18,6 +21,7 @@ Live app: https://poker-high-card.streamlit.app/
 - Break rank ties by suit.
 - Show every player's card with a consistent illustrated English-pattern deck.
 - Highlight the winner.
+- Celebrate your first-place draw with a large message and fanfare.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
 - Reset the draw and start again.
@@ -36,6 +40,7 @@ If two players draw the same rank, suits are compared in this order:
 
 - Python
 - Streamlit
+- Browser Local Storage
 
 ## Card Artwork
 
@@ -65,6 +70,12 @@ For Private device mode, have each player open the app from their own device or 
 Table updates use a file lock and an atomic file replacement so two players joining at nearly the same time do not overwrite each other.
 
 Private table codes are temporary. If the app restarts or redeploys, create a new table and share the new code.
+
+## LinkedIn
+
+The sidebar includes a **Share on LinkedIn** button for the live app. A
+ready-to-use Japanese post is available in `LINKEDIN_POST.md`. The title artwork
+at `assets/poker-title.png` can be attached as the post image.
 
 ## GitHub
 

@@ -1,14 +1,20 @@
 import base64
 import html
+import io
 import json
+import math
 import random
 import re
 import secrets
 import string
+import struct
+import wave
 from pathlib import Path
+from urllib.parse import quote
 
 import streamlit as st
 from filelock import FileLock
+from streamlit_local_storage import LocalStorage
 
 
 # Poker high-card ordering for ranks and suits.
@@ -29,6 +35,7 @@ SUIT_SYMBOLS = {
 AUTO_JUDGE_MODE = "Auto judge"
 TABLE_MODE = "Table mode"
 PRIVATE_DEVICE_MODE = "Private device mode"
+PLAY_MODES = [PRIVATE_DEVICE_MODE, TABLE_MODE, AUTO_JUDGE_MODE]
 
 TABLES_FILE = Path("private_tables.json")
 TABLES_TEMP_FILE = Path("private_tables.tmp")
@@ -41,6 +48,12 @@ CARD_RANK_NAMES = {
     "Q": "queen",
     "K": "king",
 }
+LIVE_APP_URL = "https://poker-high-card.streamlit.app/"
+LINKEDIN_SHARE_URL = (
+    "https://www.linkedin.com/sharing/share-offsite/?url="
+    + quote(LIVE_APP_URL, safe="")
+)
+NICKNAME_STORAGE_KEY = "poker_high_card_nickname"
 
 
 def create_deck():
@@ -113,6 +126,40 @@ def sort_results_by_strength(results):
 def reset_draw():
     """Clear the current draw and return the app to its starting state."""
     st.session_state.pop("results", None)
+    st.session_state.pop("draw_id", None)
+
+
+def preferred_nickname(default="Player"):
+    """Return the remembered nickname or a friendly fallback."""
+    return st.session_state.get("nickname", "").strip() or default
+
+
+def nickname_changed():
+    """Require a fresh save when the nickname text is edited."""
+    st.session_state.nickname_saved = False
+
+
+def remember_nickname(local_storage):
+    """Save the nickname in this browser for future visits."""
+    nickname = preferred_nickname()
+    st.session_state.nickname_saved = True
+
+    st.session_state.host_name = nickname
+    st.session_state.join_name = nickname
+    st.session_state.player_name_1 = nickname
+
+    local_storage.setItem(
+        NICKNAME_STORAGE_KEY,
+        nickname,
+        key="save_poker_nickname",
+    )
+
+
+def enter_play_mode(mode):
+    """Continue directly to the selected mode after the nickname is saved."""
+    st.session_state.play_style = mode
+    st.session_state.title_screen_complete = True
+    st.rerun()
 
 
 def load_private_tables():
@@ -241,15 +288,50 @@ def title_image_data():
     return base64.b64encode(TITLE_IMAGE.read_bytes()).decode("ascii")
 
 
-def show_title_screen():
-    """Show a simple opening screen before the play-style controls."""
+@st.cache_data
+def fanfare_audio():
+    """Create a short celebratory WAV without requiring another audio file."""
+    sample_rate = 22050
+    notes = [
+        ([523.25, 659.25], 0.22),
+        ([659.25, 783.99], 0.22),
+        ([783.99, 987.77], 0.24),
+        ([523.25, 659.25, 783.99, 1046.50], 0.65),
+    ]
+    samples = []
+
+    for frequencies, duration in notes:
+        sample_count = int(sample_rate * duration)
+        for index in range(sample_count):
+            time_position = index / sample_rate
+            fade_in = min(1.0, index / 180)
+            fade_out = min(1.0, (sample_count - index) / 900)
+            envelope = fade_in * fade_out
+            tone = sum(
+                math.sin(2 * math.pi * frequency * time_position)
+                for frequency in frequencies
+            ) / len(frequencies)
+            samples.append(int(32767 * 0.32 * envelope * tone))
+
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(struct.pack("<h", sample) for sample in samples))
+
+    return audio.getvalue()
+
+
+def show_title_screen(local_storage):
+    """Show the nickname and play-style choices on the opening screen."""
     background = title_image_data()
 
     st.markdown(
         f"""
         <style>
             .poker-title-screen {{
-                min-height: 500px;
+                min-height: 380px;
                 border-radius: 8px;
                 background-color: rgba(0, 35, 24, 0.28);
                 background-image: url("data:image/png;base64,{background}");
@@ -260,7 +342,7 @@ def show_title_screen():
                 flex-direction: column;
                 justify-content: flex-start;
                 align-items: center;
-                padding: 70px 24px 24px;
+                padding: 54px 24px 24px;
                 box-sizing: border-box;
                 color: white;
                 text-align: center;
@@ -284,7 +366,7 @@ def show_title_screen():
             }}
             @media (max-width: 600px) {{
                 .poker-title-screen {{
-                    min-height: 430px;
+                    min-height: 300px;
                     padding-top: 26px;
                 }}
                 .poker-title-screen h1 {{
@@ -300,9 +382,51 @@ def show_title_screen():
         unsafe_allow_html=True,
     )
 
-    if st.button("Tap to play", type="primary", use_container_width=True):
-        st.session_state.title_screen_complete = True
-        st.rerun()
+    st.text_input(
+        "Your nickname",
+        key="nickname",
+        placeholder="Enter the name everyone calls you",
+        max_chars=24,
+        on_change=nickname_changed,
+    )
+    nickname_is_saved = st.session_state.get("nickname_saved", False)
+    st.button(
+        "Nickname remembered"
+        if nickname_is_saved
+        else "Remember nickname on this device",
+        on_click=remember_nickname,
+        args=(local_storage,),
+        disabled=nickname_is_saved,
+        use_container_width=True,
+    )
+    st.markdown("**Choose a play style**")
+    modes_disabled = not nickname_is_saved
+
+    private_column, table_column, judge_column = st.columns(3)
+    with private_column:
+        if st.button(
+            "Private device",
+            type="primary",
+            disabled=modes_disabled,
+            use_container_width=True,
+        ):
+            enter_play_mode(PRIVATE_DEVICE_MODE)
+
+    with table_column:
+        if st.button(
+            "Table draw",
+            disabled=modes_disabled,
+            use_container_width=True,
+        ):
+            enter_play_mode(TABLE_MODE)
+
+    with judge_column:
+        if st.button(
+            "Auto judge",
+            disabled=modes_disabled,
+            use_container_width=True,
+        ):
+            enter_play_mode(AUTO_JUDGE_MODE)
 
 
 @st.cache_data
@@ -409,6 +533,11 @@ def render_private_device_mode():
     if "private_player_id" not in st.session_state:
         st.session_state.private_player_id = secrets.token_hex(8)
 
+    if "host_name" not in st.session_state:
+        st.session_state.host_name = preferred_nickname("Host")
+    if "join_name" not in st.session_state:
+        st.session_state.join_name = preferred_nickname()
+
     # Older links included a private player ID. Remove it so each browser gets
     # its own identity instead of accidentally joining as the host.
     if "pid" in st.query_params:
@@ -433,7 +562,7 @@ def render_private_device_mode():
                     value=6,
                     key="private_player_count",
                 )
-                host_name = st.text_input("Your name", value="Host", key="host_name")
+                host_name = st.text_input("Your name", key="host_name")
 
                 if st.button("Create table", type="primary"):
                     clean_name = host_name.strip() or "Host"
@@ -449,7 +578,7 @@ def render_private_device_mode():
                     key="join_code",
                     max_chars=12,
                 )
-                join_name = st.text_input("Your name", value="Player", key="join_name")
+                join_name = st.text_input("Your name", key="join_name")
 
                 if st.button("Join table"):
                     clean_name = join_name.strip() or "Player"
@@ -551,8 +680,20 @@ def render_private_device_mode():
 
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
+local_storage = LocalStorage(key="poker_high_card_storage")
+if "nickname" not in st.session_state:
+    stored_nickname = local_storage.getItem(NICKNAME_STORAGE_KEY)
+    st.session_state.nickname = (
+        stored_nickname.strip()
+        if isinstance(stored_nickname, str) and stored_nickname.strip()
+        else ""
+    )
+    st.session_state.nickname_saved = bool(st.session_state.nickname)
+elif "nickname_saved" not in st.session_state:
+    st.session_state.nickname_saved = bool(preferred_nickname(""))
+
 if not st.session_state.get("title_screen_complete"):
-    show_title_screen()
+    show_title_screen(local_storage)
     st.stop()
 
 st.title("Poker High Card")
@@ -567,10 +708,16 @@ with st.sidebar:
     st.write("Highest rank wins. If ranks tie, the highest suit wins.")
     st.write("Rank: A > K > Q > J > 10 > 9 > ... > 2")
     st.write("Suit: Spades > Hearts > Diamonds > Clubs")
+    st.link_button(
+        "Share on LinkedIn",
+        LINKEDIN_SHARE_URL,
+        use_container_width=True,
+    )
 
 app_mode = st.radio(
     "Play style",
-    [PRIVATE_DEVICE_MODE, TABLE_MODE, AUTO_JUDGE_MODE],
+    PLAY_MODES,
+    key="play_style",
     help="Private device mode shows each player only their own card. Table mode shows all cards without judging. Auto judge shows the winner and ranking.",
 )
 
@@ -587,7 +734,15 @@ if st.session_state.get("previous_number_of_players") != number_of_players:
 
 player_names = []
 for player_number in range(1, number_of_players + 1):
-    name = st.text_input(f"Player {player_number} name", value=f"Player {player_number}")
+    player_key = f"player_name_{player_number}"
+    if player_key not in st.session_state:
+        st.session_state[player_key] = (
+            preferred_nickname()
+            if player_number == 1
+            else f"Player {player_number}"
+        )
+
+    name = st.text_input(f"Player {player_number} name", key=player_key)
 
     # If a name is blank, use a simple default so the results always display clearly.
     player_names.append(name.strip() or f"Player {player_number}")
@@ -600,6 +755,7 @@ draw_button, reset_button = st.columns(2)
 with draw_button:
     if st.button("Draw cards", type="primary"):
         st.session_state.results = draw_cards(player_names)
+        st.session_state.draw_id = secrets.token_hex(6)
 
 with reset_button:
     st.button("Reset", on_click=reset_draw)
@@ -621,6 +777,37 @@ if "results" in st.session_state:
     else:
         winner = find_winner(results)
         ranked_results = sort_results_by_strength(results)
+        nickname = preferred_nickname()
+        is_my_win = winner == results[0]
+
+        if is_my_win:
+            safe_nickname = html.escape(nickname)
+            st.markdown(
+                f"""
+                <div style="
+                    padding: 24px 16px;
+                    margin: 12px 0 20px;
+                    background: #166534;
+                    color: #ffffff;
+                    border: 3px solid #f5c542;
+                    border-radius: 8px;
+                    text-align: center;
+                    font-size: 2rem;
+                    font-weight: 800;
+                    line-height: 1.25;
+                ">{safe_nickname}が一位だよ！</div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            draw_id = st.session_state.get("draw_id")
+            if (
+                draw_id
+                and st.session_state.get("celebrated_draw_id") != draw_id
+            ):
+                st.balloons()
+                st.audio(fanfare_audio(), format="audio/wav", autoplay=True)
+                st.session_state.celebrated_draw_id = draw_id
 
         st.subheader("Winner")
 
