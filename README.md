@@ -18,7 +18,7 @@ Live app: https://poker-high-card.streamlit.app/
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Hear original music for the title screen, gameplay, and result reveal.
-- Turn music on or off at any time.
+- Keep music off by default and let visitors turn it on at any time.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
 - Show every player's card with a consistent illustrated English-pattern deck.

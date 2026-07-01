@@ -418,7 +418,7 @@ def render_music(audio_bytes, loop=True, fallback_audio=None):
 
 def play_scene_music(scene, result_token=None):
     """Choose the right music for the current part of the experience."""
-    if not st.session_state.get("music_enabled", True):
+    if not st.session_state.get("music_enabled", False):
         return
 
     if scene == "title":
@@ -808,8 +808,10 @@ def render_private_device_mode():
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
 local_storage = LocalStorage(key="poker_high_card_storage")
-if "music_enabled" not in st.session_state:
-    st.session_state.music_enabled = True
+if "music_defaults_v2_applied" not in st.session_state:
+    # Start quietly. Music plays only after the visitor turns it on.
+    st.session_state.music_enabled = False
+    st.session_state.music_defaults_v2_applied = True
 
 if "nickname" not in st.session_state:
     stored_nickname = local_storage.getItem(NICKNAME_STORAGE_KEY)
