@@ -16,7 +16,7 @@ Live app: https://poker-high-card.streamlit.app/
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
-- Show every player's card with larger corners and classic pip placement.
+- Show every player's card with a consistent illustrated English-pattern deck.
 - Highlight the winner.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
@@ -36,6 +36,13 @@ If two players draw the same rank, suits are compared in this order:
 
 - Python
 - Streamlit
+
+## Card Artwork
+
+The card faces in `assets/cards` come from the
+[Webisso open-source playing cards](https://github.com/webisso/playing-cards)
+project and are used under the MIT License. A copy of the license is included
+at `assets/cards/LICENSE.webisso`.
 
 ## How to Run
 

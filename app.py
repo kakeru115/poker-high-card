@@ -26,8 +26,6 @@ SUIT_SYMBOLS = {
     "Clubs": "♣",
 }
 
-RED_SUITS = ["Hearts", "Diamonds"]
-
 AUTO_JUDGE_MODE = "Auto judge"
 TABLE_MODE = "Table mode"
 PRIVATE_DEVICE_MODE = "Private device mode"
@@ -36,17 +34,12 @@ TABLES_FILE = Path("private_tables.json")
 TABLES_TEMP_FILE = Path("private_tables.tmp")
 TABLES_LOCK = FileLock("private_tables.lock", timeout=5)
 TITLE_IMAGE = Path("assets/poker-title.png")
-
-PIP_POSITIONS = {
-    "2": [(50, 27), (50, 73)],
-    "3": [(50, 23), (50, 50), (50, 77)],
-    "4": [(31, 27), (69, 27), (31, 73), (69, 73)],
-    "5": [(31, 25), (69, 25), (50, 50), (31, 75), (69, 75)],
-    "6": [(31, 23), (69, 23), (31, 50), (69, 50), (31, 77), (69, 77)],
-    "7": [(31, 20), (69, 20), (50, 36), (31, 50), (69, 50), (31, 80), (69, 80)],
-    "8": [(31, 18), (69, 18), (50, 35), (31, 43), (69, 43), (50, 65), (31, 82), (69, 82)],
-    "9": [(31, 18), (69, 18), (31, 39), (69, 39), (50, 50), (31, 61), (69, 61), (31, 82), (69, 82)],
-    "10": [(31, 16), (69, 16), (50, 31), (31, 38), (69, 38), (31, 62), (69, 62), (50, 69), (31, 84), (69, 84)],
+CARD_ASSETS_DIR = Path("assets/cards")
+CARD_RANK_NAMES = {
+    "A": "ace",
+    "J": "jack",
+    "Q": "queen",
+    "K": "king",
 }
 
 
@@ -77,14 +70,6 @@ def format_card(card):
     """Create a friendly card label for display."""
     symbol = SUIT_SYMBOLS[card["suit"]]
     return f"{card['rank']} {symbol} {card['suit']}"
-
-
-def card_color(card):
-    """Use red for hearts and diamonds, and dark text for black suits."""
-    if card["suit"] in RED_SUITS:
-        return "#b42318"
-
-    return "#1f2937"
 
 
 def draw_cards(player_names):
@@ -320,117 +305,47 @@ def show_title_screen():
         st.rerun()
 
 
-def card_center_html(rank, symbol):
-    """Build the middle of a card with classic pips or a face-card panel."""
-    if rank == "A":
-        return f'<div class="card-ace">{symbol}</div>'
-
-    if rank in ["J", "Q", "K"]:
-        return (
-            f'<div class="face-card"><div>{symbol}</div>'
-            f"<strong>{rank}</strong><div>{symbol}</div></div>"
-        )
-
-    pips = []
-    for left, top in PIP_POSITIONS[rank]:
-        rotation = "rotate(180deg)" if top > 50 else "none"
-        pips.append(
-            f'<span class="card-pip" style="left:{left}%; top:{top}%; '
-            f'transform:translate(-50%, -50%) {rotation};">{symbol}</span>'
-        )
-
-    return "".join(pips)
+@st.cache_data
+def card_image_data(rank, suit):
+    """Load one matching card asset and encode it for the HTML image."""
+    rank_name = CARD_RANK_NAMES.get(rank, rank)
+    detail_suffix = "2" if rank in ["J", "Q", "K"] else ""
+    filename = f"{rank_name}_of_{suit.lower()}{detail_suffix}.svg"
+    card_path = CARD_ASSETS_DIR / filename
+    return base64.b64encode(card_path.read_bytes()).decode("ascii")
 
 
 def show_card(result, is_winner=False):
-    """Display one player's card as a familiar paper playing card."""
+    """Display the matching card from one consistent classic deck."""
     card = result["card"]
     player_name = html.escape(result["player"])
     border_color = "#15803d" if is_winner else "#c8c8c8"
     winner_label = "Winner" if is_winner else "Drawn card"
     rank = card["rank"]
-    symbol = SUIT_SYMBOLS[card["suit"]]
-    color = card_color(card)
-    center = card_center_html(rank, symbol)
+    suit = card["suit"]
+    card_data = card_image_data(rank, suit)
 
     st.markdown(
         f"""
-        <style>
-            .playing-card {{
-                position: relative;
-                box-sizing: border-box;
-                width: min(100%, 210px);
-                aspect-ratio: 5 / 7;
-                margin: 0 auto;
-                border-radius: 8px;
-                background: #fffefb;
-                box-shadow: 0 5px 14px rgba(31, 41, 55, 0.18);
-                font-family: Georgia, 'Times New Roman', serif;
-            }}
-            .card-corner {{
-                position: absolute;
-                font-size: 2rem;
-                font-weight: 700;
-                line-height: 0.82;
-                z-index: 2;
-            }}
-            .card-corner span {{
-                display: block;
-                font-size: 1.55rem;
-                margin-top: 8px;
-            }}
-            .card-pip {{
-                position: absolute;
-                font-size: 2.2rem;
-                line-height: 1;
-            }}
-            .card-ace {{
-                position: absolute;
-                inset: 0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 6.2rem;
-            }}
-            .face-card {{
-                position: absolute;
-                inset: 24% 25%;
-                border: 2px solid currentColor;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: space-around;
-                font-size: 2rem;
-                line-height: 1;
-            }}
-            .face-card strong {{
-                font-size: 4.4rem;
-            }}
-        </style>
         <div style="text-align: center; margin: 8px 0 22px;">
             <div style="font-size: 1rem; color: #57606a;">{winner_label}</div>
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{player_name}</div>
-            <div class="playing-card" style="
-                border: 2px solid {border_color};
-                color: {color};
-            ">
-                <div class="card-corner" style="
-                    top: 10px;
-                    left: 11px;
-                ">
-                    <div>{rank}</div>
-                    <span>{symbol}</span>
-                </div>
-                {center}
-                <div class="card-corner" style="
-                    right: 11px;
-                    bottom: 10px;
-                    transform: rotate(180deg);
-                ">
-                    <div>{rank}</div>
-                    <span>{symbol}</span>
-                </div>
-            </div>
+            <img
+                class="playing-card-image"
+                src="data:image/svg+xml;base64,{card_data}"
+                alt="{rank} of {suit}"
+                style="
+                    display: block;
+                    box-sizing: border-box;
+                    width: min(100%, 200px);
+                    height: auto;
+                    margin: 0 auto;
+                    border: 3px solid {border_color};
+                    border-radius: 8px;
+                    background: #fffefb;
+                    box-shadow: 0 5px 14px rgba(31, 41, 55, 0.18);
+                "
+            >
         </div>
         """,
         unsafe_allow_html=True,
@@ -448,8 +363,8 @@ def show_hidden_card(player_name):
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{safe_name}</div>
             <div style="
                 box-sizing: border-box;
-                width: min(100%, 210px);
-                aspect-ratio: 5 / 7;
+                width: min(100%, 200px);
+                aspect-ratio: 167 / 243;
                 margin: 0 auto;
                 border: 7px solid #fffefb;
                 outline: 1px solid #b8b8b8;
