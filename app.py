@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import random
@@ -34,6 +35,19 @@ PRIVATE_DEVICE_MODE = "Private device mode"
 TABLES_FILE = Path("private_tables.json")
 TABLES_TEMP_FILE = Path("private_tables.tmp")
 TABLES_LOCK = FileLock("private_tables.lock", timeout=5)
+TITLE_IMAGE = Path("assets/poker-title.png")
+
+PIP_POSITIONS = {
+    "2": [(50, 27), (50, 73)],
+    "3": [(50, 23), (50, 50), (50, 77)],
+    "4": [(31, 27), (69, 27), (31, 73), (69, 73)],
+    "5": [(31, 25), (69, 25), (50, 50), (31, 75), (69, 75)],
+    "6": [(31, 23), (69, 23), (31, 50), (69, 50), (31, 77), (69, 77)],
+    "7": [(31, 20), (69, 20), (50, 36), (31, 50), (69, 50), (31, 80), (69, 80)],
+    "8": [(31, 18), (69, 18), (50, 35), (31, 43), (69, 43), (50, 65), (31, 82), (69, 82)],
+    "9": [(31, 18), (69, 18), (31, 39), (69, 39), (50, 50), (31, 61), (69, 61), (31, 82), (69, 82)],
+    "10": [(31, 16), (69, 16), (50, 31), (31, 38), (69, 38), (31, 62), (69, 62), (50, 69), (31, 84), (69, 84)],
+}
 
 
 def create_deck():
@@ -236,6 +250,98 @@ def leave_private_table():
     st.query_params.clear()
 
 
+@st.cache_data
+def title_image_data():
+    """Read the title artwork once and turn it into an embeddable image."""
+    return base64.b64encode(TITLE_IMAGE.read_bytes()).decode("ascii")
+
+
+def show_title_screen():
+    """Show a simple opening screen before the play-style controls."""
+    background = title_image_data()
+
+    st.markdown(
+        f"""
+        <style>
+            .poker-title-screen {{
+                min-height: 500px;
+                border-radius: 8px;
+                background-color: rgba(0, 35, 24, 0.28);
+                background-image: url("data:image/png;base64,{background}");
+                background-blend-mode: multiply;
+                background-size: cover;
+                background-position: center;
+                display: flex;
+                flex-direction: column;
+                justify-content: flex-start;
+                align-items: center;
+                padding: 70px 24px 24px;
+                box-sizing: border-box;
+                color: white;
+                text-align: center;
+                box-shadow: 0 6px 18px rgba(31, 41, 55, 0.2);
+            }}
+            .poker-title-screen h1 {{
+                font-family: Georgia, 'Times New Roman', serif;
+                font-size: 3.2rem;
+                letter-spacing: 0;
+                line-height: 1.05;
+                margin: 0;
+                color: #ffffff;
+                text-shadow: 0 2px 7px rgba(0, 0, 0, 0.6);
+            }}
+            .poker-title-screen p {{
+                max-width: 480px;
+                font-size: 1.15rem;
+                font-weight: 600;
+                margin-top: 14px;
+                text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7);
+            }}
+            @media (max-width: 600px) {{
+                .poker-title-screen {{
+                    min-height: 430px;
+                    padding-top: 26px;
+                }}
+                .poker-title-screen h1 {{
+                    font-size: 2.45rem;
+                }}
+            }}
+        </style>
+        <div class="poker-title-screen">
+            <h1>Poker High Card</h1>
+            <p>Choose the first dealer.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Tap to play", type="primary", use_container_width=True):
+        st.session_state.title_screen_complete = True
+        st.rerun()
+
+
+def card_center_html(rank, symbol):
+    """Build the middle of a card with classic pips or a face-card panel."""
+    if rank == "A":
+        return f'<div class="card-ace">{symbol}</div>'
+
+    if rank in ["J", "Q", "K"]:
+        return (
+            f'<div class="face-card"><div>{symbol}</div>'
+            f"<strong>{rank}</strong><div>{symbol}</div></div>"
+        )
+
+    pips = []
+    for left, top in PIP_POSITIONS[rank]:
+        rotation = "rotate(180deg)" if top > 50 else "none"
+        pips.append(
+            f'<span class="card-pip" style="left:{left}%; top:{top}%; '
+            f'transform:translate(-50%, -50%) {rotation};">{symbol}</span>'
+        )
+
+    return "".join(pips)
+
+
 def show_card(result, is_winner=False):
     """Display one player's card as a familiar paper playing card."""
     card = result["card"]
@@ -245,55 +351,84 @@ def show_card(result, is_winner=False):
     rank = card["rank"]
     symbol = SUIT_SYMBOLS[card["suit"]]
     color = card_color(card)
+    center = card_center_html(rank, symbol)
 
     st.markdown(
         f"""
-        <div style="text-align: center; margin: 8px 0 22px;">
-            <div style="font-size: 0.8rem; color: #57606a;">{winner_label}</div>
-            <div style="font-weight: 700; margin: 2px 0 9px;">{player_name}</div>
-            <div style="
+        <style>
+            .playing-card {{
                 position: relative;
                 box-sizing: border-box;
-                width: min(100%, 180px);
+                width: min(100%, 210px);
                 aspect-ratio: 5 / 7;
                 margin: 0 auto;
-                border: 2px solid {border_color};
                 border-radius: 8px;
                 background: #fffefb;
-                color: {color};
-                box-shadow: 0 5px 14px rgba(31, 41, 55, 0.16);
+                box-shadow: 0 5px 14px rgba(31, 41, 55, 0.18);
                 font-family: Georgia, 'Times New Roman', serif;
+            }}
+            .card-corner {{
+                position: absolute;
+                font-size: 2rem;
+                font-weight: 700;
+                line-height: 0.82;
+                z-index: 2;
+            }}
+            .card-corner span {{
+                display: block;
+                font-size: 1.55rem;
+                margin-top: 8px;
+            }}
+            .card-pip {{
+                position: absolute;
+                font-size: 2.2rem;
+                line-height: 1;
+            }}
+            .card-ace {{
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 6.2rem;
+            }}
+            .face-card {{
+                position: absolute;
+                inset: 24% 25%;
+                border: 2px solid currentColor;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: space-around;
+                font-size: 2rem;
+                line-height: 1;
+            }}
+            .face-card strong {{
+                font-size: 4.4rem;
+            }}
+        </style>
+        <div style="text-align: center; margin: 8px 0 22px;">
+            <div style="font-size: 1rem; color: #57606a;">{winner_label}</div>
+            <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{player_name}</div>
+            <div class="playing-card" style="
+                border: 2px solid {border_color};
+                color: {color};
             ">
-                <div style="
-                    position: absolute;
+                <div class="card-corner" style="
                     top: 10px;
                     left: 11px;
-                    font-size: 1.65rem;
-                    font-weight: 700;
-                    line-height: 0.85;
                 ">
                     <div>{rank}</div>
-                    <div style="font-size: 1.35rem; margin-top: 6px;">{symbol}</div>
+                    <span>{symbol}</span>
                 </div>
-                <div style="
-                    position: absolute;
-                    inset: 0;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 5rem;
-                ">{symbol}</div>
-                <div style="
-                    position: absolute;
+                {center}
+                <div class="card-corner" style="
                     right: 11px;
                     bottom: 10px;
                     transform: rotate(180deg);
-                    font-size: 1.65rem;
-                    font-weight: 700;
-                    line-height: 0.85;
                 ">
                     <div>{rank}</div>
-                    <div style="font-size: 1.35rem; margin-top: 6px;">{symbol}</div>
+                    <span>{symbol}</span>
                 </div>
             </div>
         </div>
@@ -309,11 +444,11 @@ def show_hidden_card(player_name):
     st.markdown(
         f"""
         <div style="text-align: center; margin: 8px 0 22px;">
-            <div style="font-size: 0.8rem; color: #57606a;">Hidden card</div>
-            <div style="font-weight: 700; margin: 2px 0 9px;">{safe_name}</div>
+            <div style="font-size: 1rem; color: #57606a;">Hidden card</div>
+            <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{safe_name}</div>
             <div style="
                 box-sizing: border-box;
-                width: min(100%, 180px);
+                width: min(100%, 210px);
                 aspect-ratio: 5 / 7;
                 margin: 0 auto;
                 border: 7px solid #fffefb;
@@ -335,12 +470,12 @@ def show_hidden_card(player_name):
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 1.7rem;
+                    font-size: 2.1rem;
                     line-height: 1.7;
                     letter-spacing: 0;
                 ">♠ ♥<br>♦ ♣</div>
             </div>
-            <div style="color: #57606a; font-size: 0.8rem; margin-top: 8px;">
+            <div style="color: #57606a; font-size: 0.95rem; margin-top: 8px;">
                 Only they can see the front
             </div>
         </div>
@@ -501,10 +636,18 @@ def render_private_device_mode():
 
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
+if not st.session_state.get("title_screen_complete"):
+    show_title_screen()
+    st.stop()
+
 st.title("Poker High Card")
 st.write("Draw one card for each player to decide the first dealer or button.")
 
 with st.sidebar:
+    if st.button("Back to title", use_container_width=True):
+        st.session_state.title_screen_complete = False
+        st.rerun()
+
     st.header("Rules")
     st.write("Highest rank wins. If ranks tie, the highest suit wins.")
     st.write("Rank: A > K > Q > J > 10 > 9 > ... > 2")

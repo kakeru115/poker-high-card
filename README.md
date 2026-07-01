@@ -10,12 +10,13 @@ Live app: https://poker-high-card.streamlit.app/
 - Enter custom player names.
 - Build a standard 52-card deck.
 - Draw one unique card per player.
+- Open with a dedicated title screen before choosing a play style.
 - Choose Private device mode so each person can join from their own browser and see only their own card.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
-- Show every player's card as a familiar paper playing card.
+- Show every player's card with larger corners and classic pip placement.
 - Highlight the winner.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
