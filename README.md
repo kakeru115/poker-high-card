@@ -17,11 +17,13 @@ Live app: https://poker-high-card.streamlit.app/
 - Choose Private device mode so each person can join from their own browser and see only their own card.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
+- Hear original music for the title screen, gameplay, and result reveal.
+- Turn music on or off at any time.
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
 - Show every player's card with a consistent illustrated English-pattern deck.
 - Highlight the winner.
-- Celebrate your first-place draw with a large message and fanfare.
+- Celebrate your first-place draw with a large message, balloons, and result fanfare.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
 - Reset the draw and start again.

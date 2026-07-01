@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
+import streamlit.components.v1 as components
 from filelock import FileLock
 from streamlit_local_storage import LocalStorage
 
@@ -268,6 +269,7 @@ def deal_private_table(table_code):
 
         table["players"] = draw_cards_for_players(table["players"])
         table["status"] = "dealt"
+        table["draw_id"] = secrets.token_hex(6)
         save_private_tables(tables)
 
 
@@ -288,30 +290,26 @@ def title_image_data():
     return base64.b64encode(TITLE_IMAGE.read_bytes()).decode("ascii")
 
 
-@st.cache_data
-def fanfare_audio():
-    """Create a short celebratory WAV without requiring another audio file."""
-    sample_rate = 22050
-    notes = [
-        ([523.25, 659.25], 0.22),
-        ([659.25, 783.99], 0.22),
-        ([783.99, 987.77], 0.24),
-        ([523.25, 659.25, 783.99, 1046.50], 0.65),
-    ]
+def synthesize_music(events):
+    """Turn a short list of notes into an original WAV track."""
+    sample_rate = 16000
     samples = []
 
-    for frequencies, duration in notes:
+    for frequencies, duration, volume in events:
         sample_count = int(sample_rate * duration)
         for index in range(sample_count):
             time_position = index / sample_rate
-            fade_in = min(1.0, index / 180)
-            fade_out = min(1.0, (sample_count - index) / 900)
+            fade_in = min(1.0, index / (sample_rate * 0.025))
+            fade_out = min(1.0, (sample_count - index) / (sample_rate * 0.08))
             envelope = fade_in * fade_out
+
+            # A quiet second harmonic makes the generated sine waves feel warmer.
             tone = sum(
                 math.sin(2 * math.pi * frequency * time_position)
+                + 0.18 * math.sin(4 * math.pi * frequency * time_position)
                 for frequency in frequencies
             ) / len(frequencies)
-            samples.append(int(32767 * 0.32 * envelope * tone))
+            samples.append(int(32767 * volume * envelope * tone))
 
     audio = io.BytesIO()
     with wave.open(audio, "wb") as wav_file:
@@ -321,6 +319,123 @@ def fanfare_audio():
         wav_file.writeframes(b"".join(struct.pack("<h", sample) for sample in samples))
 
     return audio.getvalue()
+
+
+@st.cache_data
+def title_music_audio():
+    """Create a relaxed card-room theme for the title screen."""
+    chords = [
+        [130.81, 261.63, 329.63, 392.00],
+        [110.00, 220.00, 261.63, 329.63],
+        [146.83, 293.66, 349.23, 440.00],
+        [98.00, 196.00, 246.94, 349.23],
+    ]
+    melody = [
+        659.25, 783.99, 659.25, 587.33,
+        523.25, 659.25, 523.25, 493.88,
+        587.33, 698.46, 587.33, 523.25,
+        493.88, 587.33, 523.25, 392.00,
+    ]
+    events = []
+
+    for index, melody_note in enumerate(melody):
+        chord = chords[(index // 4) % len(chords)]
+        events.append((chord + [melody_note], 0.48, 0.20))
+
+    return synthesize_music(events)
+
+
+@st.cache_data
+def gameplay_music_audio():
+    """Create a low-key suspense theme for choosing and drawing cards."""
+    chords = [
+        [110.00, 220.00, 261.63, 329.63],
+        [87.31, 174.61, 220.00, 261.63],
+        [73.42, 146.83, 174.61, 220.00],
+        [82.41, 164.81, 207.65, 246.94],
+    ]
+    melody = [
+        440.00, 523.25, 493.88, 440.00,
+        349.23, 440.00, 392.00, 349.23,
+        293.66, 349.23, 329.63, 293.66,
+        329.63, 415.30, 392.00, 329.63,
+    ]
+    events = []
+
+    for index, melody_note in enumerate(melody):
+        chord = chords[(index // 4) % len(chords)]
+        events.append((chord + [melody_note], 0.52, 0.16))
+
+    return synthesize_music(events)
+
+
+@st.cache_data
+def result_music_audio():
+    """Create a bright result fanfare that resolves into the gameplay theme."""
+    events = [
+        ([261.63, 523.25, 659.25], 0.24, 0.25),
+        ([329.63, 659.25, 783.99], 0.24, 0.25),
+        ([392.00, 783.99, 987.77], 0.28, 0.27),
+        ([523.25, 659.25, 783.99, 1046.50], 0.72, 0.25),
+    ]
+    return synthesize_music(events)
+
+
+def render_music(audio_bytes, loop=True, fallback_audio=None):
+    """Play one hidden track, optionally returning to gameplay music afterward."""
+    audio_data = base64.b64encode(audio_bytes).decode("ascii")
+    fallback_data = (
+        base64.b64encode(fallback_audio).decode("ascii")
+        if fallback_audio
+        else ""
+    )
+    loop_attribute = "loop" if loop else ""
+
+    # The audio lives in a tiny component so the page stays focused on the game.
+    components.html(
+        f"""
+        <audio id="poker-music" src="data:audio/wav;base64,{audio_data}"
+            {loop_attribute} autoplay></audio>
+        <script>
+            const player = document.getElementById("poker-music");
+            const fallback = "{fallback_data}";
+            player.volume = 0.22;
+            player.play().catch(() => {{}});
+
+            if (fallback) {{
+                player.addEventListener("ended", () => {{
+                    player.src = "data:audio/wav;base64," + fallback;
+                    player.loop = true;
+                    player.volume = 0.18;
+                    player.play().catch(() => {{}});
+                }}, {{ once: true }});
+            }}
+        </script>
+        """,
+        height=1,
+    )
+
+
+def play_scene_music(scene, result_token=None):
+    """Choose the right music for the current part of the experience."""
+    if not st.session_state.get("music_enabled", True):
+        return
+
+    if scene == "title":
+        render_music(title_music_audio())
+        return
+
+    if scene == "result" and result_token:
+        if st.session_state.get("last_result_music_token") != result_token:
+            render_music(
+                result_music_audio(),
+                loop=False,
+                fallback_audio=gameplay_music_audio(),
+            )
+            st.session_state.last_result_music_token = result_token
+            return
+
+    render_music(gameplay_music_audio())
 
 
 def show_title_screen(local_storage):
@@ -381,6 +496,9 @@ def show_title_screen(local_storage):
         """,
         unsafe_allow_html=True,
     )
+
+    st.toggle("Music", key="music_enabled")
+    play_scene_music("title")
 
     st.text_input(
         "Your nickname",
@@ -591,6 +709,7 @@ def render_private_device_mode():
                         joined_or_created = True
 
         if not joined_or_created:
+            play_scene_music("gameplay")
             return
 
         setup_placeholder.empty()
@@ -599,6 +718,7 @@ def render_private_device_mode():
     table = tables.get(table_code)
 
     if table is None:
+        play_scene_music("gameplay")
         st.warning(
             "This table code was not found. It may have expired after the app restarted or redeployed."
         )
@@ -618,9 +738,16 @@ def render_private_device_mode():
             current_player = player
 
     if current_player is None:
+        play_scene_music("gameplay")
         st.error("This browser is not joined to that table.")
         st.button("Leave table", on_click=leave_private_table)
         return
+
+    if table["status"] == "dealt":
+        result_token = f"private:{table_code}:{table.get('draw_id', 'dealt')}"
+        play_scene_music("result", result_token)
+    else:
+        play_scene_music("gameplay")
 
     st.metric("Table code", table_code)
     st.caption(
@@ -681,6 +808,9 @@ def render_private_device_mode():
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
 local_storage = LocalStorage(key="poker_high_card_storage")
+if "music_enabled" not in st.session_state:
+    st.session_state.music_enabled = True
+
 if "nickname" not in st.session_state:
     stored_nickname = local_storage.getItem(NICKNAME_STORAGE_KEY)
     st.session_state.nickname = (
@@ -703,6 +833,8 @@ with st.sidebar:
     if st.button("Back to title", use_container_width=True):
         st.session_state.title_screen_complete = False
         st.rerun()
+
+    st.toggle("Music", key="music_enabled")
 
     st.header("Rules")
     st.write("Highest rank wins. If ranks tie, the highest suit wins.")
@@ -756,9 +888,15 @@ with draw_button:
     if st.button("Draw cards", type="primary"):
         st.session_state.results = draw_cards(player_names)
         st.session_state.draw_id = secrets.token_hex(6)
+        st.rerun()
 
 with reset_button:
     st.button("Reset", on_click=reset_draw)
+
+if "results" in st.session_state:
+    play_scene_music("result", st.session_state.get("draw_id"))
+else:
+    play_scene_music("gameplay")
 
 if "results" in st.session_state:
     results = st.session_state.results
@@ -806,7 +944,6 @@ if "results" in st.session_state:
                 and st.session_state.get("celebrated_draw_id") != draw_id
             ):
                 st.balloons()
-                st.audio(fanfare_audio(), format="audio/wav", autoplay=True)
                 st.session_state.celebrated_draw_id = draw_id
 
         st.subheader("Winner")
