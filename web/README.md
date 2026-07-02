@@ -4,6 +4,8 @@ This directory contains the Next.js version of Poker High Card. The existing
 Streamlit app remains available from the repository root while the migration is
 tested.
 
+Preview: https://poker-high-card-next.vercel.app/
+
 ## Included
 
 - Japanese and English interfaces
