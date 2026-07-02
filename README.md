@@ -6,6 +6,14 @@ Live app: https://poker-high-card.streamlit.app/
 
 ![Poker High Card title screen](assets/poker-title.png)
 
+## Next.js Migration
+
+A new Next.js + Supabase version is being developed in [`web/`](web/README.md).
+The existing Streamlit app remains available while the new version is tested.
+The web version adds a more flexible responsive interface, smooth client-side
+transitions, Supabase Realtime lobby updates, anonymous device identities, and
+Row Level Security so each private card can only be read by its owner.
+
 ## Features
 
 - Choose 2 to 10 players.

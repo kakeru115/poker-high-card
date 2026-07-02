@@ -10,3 +10,6 @@ env/
 private_tables.json
 private_tables.lock
 private_tables.tmp
+node_modules/
+.next/
+web/.env.local
