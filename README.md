@@ -18,6 +18,9 @@ Live app: https://poker-high-card.streamlit.app/
 - Choose Private device mode so each person can join from their own browser and see only their own card.
 - Join a private table by scanning its QR code.
 - Keep private tables available across app restarts with Supabase.
+- Use table codes without ambiguous `0/O` or `1/I` characters.
+- Remove inactive private tables automatically after 24 hours.
+- Retry a table connection without leaving the current screen.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Hear original music for the title screen, gameplay, and result reveal.
@@ -72,7 +75,7 @@ streamlit run app.py
 
 Then open the local URL shown in your terminal.
 
-For Private device mode, have each player open the app from their own device or browser session. The host creates a table, then shares the QR code, six-character code, or page URL. The shared URL contains only the table code, so every player still joins with their own name and receives a separate private identity. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
+For Private device mode, have each player open the app from their own device or browser session. The host creates a table, then shares its QR code. The QR URL contains only the table code, so every player still joins with their own name and receives a separate private identity. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
 
 ## Supabase Setup
 

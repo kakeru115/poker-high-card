@@ -7,9 +7,9 @@ import os
 import random
 import re
 import secrets
-import string
 import struct
 import wave
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -17,7 +17,7 @@ import qrcode
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 from streamlit_local_storage import LocalStorage
 
 
@@ -64,6 +64,7 @@ LINKEDIN_SHARE_URL = (
     + quote(LIVE_APP_URL, safe="")
 )
 NICKNAME_STORAGE_KEY = "poker_high_card_nickname"
+TABLE_LIFETIME = timedelta(hours=24)
 
 
 def is_japanese():
@@ -209,10 +210,34 @@ def supabase_settings():
     }
 
 
+def utc_now():
+    """Return one timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+def cleanup_expired_supabase_tables(settings):
+    """Delete Supabase rooms that have not changed for 24 hours."""
+    now = utc_now()
+    last_cleanup = st.session_state.get("last_table_cleanup_at", 0.0)
+    if now.timestamp() - last_cleanup < 3600:
+        return
+
+    cutoff = (now - TABLE_LIFETIME).isoformat()
+    response = requests.delete(
+        f"{settings['url']}/rest/v1/poker_tables",
+        headers=settings["headers"],
+        params={"updated_at": f"lt.{cutoff}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    st.session_state.last_table_cleanup_at = now.timestamp()
+
+
 def load_private_tables():
     """Load shared tables from Supabase, or local JSON during development."""
     settings = supabase_settings()
     if settings:
+        cleanup_expired_supabase_tables(settings)
         response = requests.get(
             f"{settings['url']}/rest/v1/poker_tables",
             headers=settings["headers"],
@@ -227,11 +252,31 @@ def load_private_tables():
             return {}
 
         with TABLES_FILE.open("r", encoding="utf-8") as file:
-            return json.load(file)
+            tables = json.load(file)
+
+        cutoff = utc_now() - TABLE_LIFETIME
+        active_tables = {}
+        for table_code, table in tables.items():
+            updated_at = table.get("updated_at")
+            if updated_at:
+                try:
+                    if datetime.fromisoformat(updated_at) < cutoff:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            active_tables[table_code] = table
+
+        if len(active_tables) != len(tables):
+            with TABLES_TEMP_FILE.open("w", encoding="utf-8") as file:
+                json.dump(active_tables, file, indent=2)
+            TABLES_TEMP_FILE.replace(TABLES_FILE)
+
+        return active_tables
 
 
 def save_private_table(table_code, table, tables):
     """Save one shared table without overwriting unrelated Supabase rooms."""
+    table["updated_at"] = utc_now().isoformat()
     settings = supabase_settings()
     if settings:
         headers = {
@@ -264,7 +309,8 @@ def clean_table_code(table_code):
 
 def make_table_code():
     """Create a short table code that is easy to read aloud."""
-    alphabet = string.ascii_uppercase + string.digits
+    # Skip 0/O and 1/I so codes are easier to read aloud and type.
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(6))
 
 
@@ -774,7 +820,7 @@ def show_hidden_card(player_name, animation_index=0):
     )
 
 
-def render_private_device_mode():
+def _render_private_device_mode():
     """Let each player use their own browser and see only their own card."""
     st.subheader(tr("Private Device Mode", "各自の端末モード"))
     st.info(
@@ -913,8 +959,8 @@ def render_private_device_mode():
     st.metric(tr("Table code", "テーブルコード"), table_code)
     st.caption(
         tr(
-            "Share this QR code or table code. Each person joins from their own device.",
-            "QRコードまたはテーブルコードを共有し、各自の端末から参加してください。",
+            "Share this QR code. Each person joins from their own device.",
+            "このQRコードを共有し、各自の端末から参加してください。",
         )
     )
     share_url = f"{LIVE_APP_URL}?table={table_code}"
@@ -1009,6 +1055,31 @@ def render_private_device_mode():
         tr("Leave table on this device", "この端末でテーブルから退出"),
         on_click=leave_private_table,
     )
+
+
+def render_private_device_mode():
+    """Show a friendly retry screen when shared storage is unavailable."""
+    try:
+        _render_private_device_mode()
+    except (
+        requests.RequestException,
+        OSError,
+        json.JSONDecodeError,
+        FileLockTimeout,
+    ):
+        play_scene_music("gameplay")
+        st.error(
+            tr(
+                "The table connection failed. Check your connection and try again.",
+                "テーブルへの接続に失敗しました。通信状況を確認して再試行してください。",
+            )
+        )
+        if st.button(
+            tr("Retry connection", "接続を再試行"),
+            type="primary",
+            use_container_width=True,
+        ):
+            st.rerun()
 
 
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
