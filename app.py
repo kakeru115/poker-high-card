@@ -8,6 +8,7 @@ import random
 import re
 import secrets
 import struct
+import textwrap
 import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -64,6 +65,7 @@ LINKEDIN_SHARE_URL = (
     + quote(LIVE_APP_URL, safe="")
 )
 NICKNAME_STORAGE_KEY = "poker_high_card_nickname"
+PLAYER_ID_STORAGE_KEY = "poker_high_card_player_id"
 TABLE_LIFETIME = timedelta(hours=24)
 
 
@@ -192,6 +194,28 @@ def remember_nickname_and_enter(local_storage, mode):
     st.session_state.title_screen_complete = True
 
 
+def load_or_create_player_id(local_storage):
+    """Keep one private-table identity for this browser across reloads."""
+    if "private_player_id" in st.session_state:
+        return
+
+    stored_player_id = local_storage.getItem(PLAYER_ID_STORAGE_KEY)
+    if (
+        isinstance(stored_player_id, str)
+        and re.fullmatch(r"[0-9a-f]{16}", stored_player_id)
+    ):
+        st.session_state.private_player_id = stored_player_id
+        return
+
+    player_id = secrets.token_hex(8)
+    st.session_state.private_player_id = player_id
+    local_storage.setItem(
+        PLAYER_ID_STORAGE_KEY,
+        player_id,
+        key="save_poker_player_id",
+    )
+
+
 def supabase_settings():
     """Read credentials exposed by Streamlit's top-level secrets."""
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -274,6 +298,24 @@ def load_private_tables():
         return active_tables
 
 
+def restore_private_table_session():
+    """Return a known player straight to their table after a page reload."""
+    table_code = clean_table_code(st.query_params.get("table", ""))
+    if not table_code:
+        return
+
+    table = load_private_tables().get(table_code)
+    player_id = st.session_state.private_player_id
+    player_is_seated = table and any(
+        player.get("id") == player_id for player in table.get("players", [])
+    )
+
+    if player_is_seated:
+        st.session_state.private_table_code = table_code
+        st.session_state.play_style = PRIVATE_DEVICE_MODE
+        st.session_state.title_screen_complete = True
+
+
 def save_private_table(table_code, table, tables):
     """Save one shared table without overwriting unrelated Supabase rooms."""
     table["updated_at"] = utc_now().isoformat()
@@ -328,11 +370,13 @@ def create_private_table(number_of_players, host_name):
             "host_id": player_id,
             "number_of_players": number_of_players,
             "status": "waiting",
+            "locked": False,
             "players": [
                 {
                     "id": player_id,
                     "name": host_name,
                     "card": None,
+                    "ready": False,
                 }
             ],
         }
@@ -365,6 +409,12 @@ def join_private_table(table_code, player_name):
                 "このテーブルではすでにカードが配られています。",
             )
 
+        if table.get("locked", False):
+            return tr(
+                "The host has locked this table.",
+                "ホストがこのテーブルをロックしています。",
+            )
+
         player_id = st.session_state.private_player_id
         for player in table["players"]:
             if player["id"] == player_id:
@@ -378,12 +428,60 @@ def join_private_table(table_code, player_name):
                     "このテーブルは満席です。",
                 )
 
-            table["players"].append({"id": player_id, "name": player_name, "card": None})
+            table["players"].append(
+                {
+                    "id": player_id,
+                    "name": player_name,
+                    "card": None,
+                    "ready": False,
+                }
+            )
             save_private_table(table_code, table, tables)
 
     st.session_state.private_table_code = table_code
     st.query_params["table"] = table_code
     return None
+
+
+def set_player_ready(table_code, player_id, ready):
+    """Update one player's ready state in the waiting lobby."""
+    with TABLES_LOCK:
+        tables = load_private_tables()
+        table = tables.get(table_code)
+        if table is None or table["status"] != "waiting":
+            return
+
+        for player in table["players"]:
+            if player["id"] == player_id:
+                player["ready"] = ready
+                save_private_table(table_code, table, tables)
+                return
+
+
+def set_table_locked(table_code, locked):
+    """Allow the host to stop or resume new joins."""
+    with TABLES_LOCK:
+        tables = load_private_tables()
+        table = tables.get(table_code)
+        if table is None or table["status"] != "waiting":
+            return
+
+        table["locked"] = locked
+        save_private_table(table_code, table, tables)
+
+
+def remove_table_player(table_code, player_id):
+    """Let the host remove one non-host player from the lobby."""
+    with TABLES_LOCK:
+        tables = load_private_tables()
+        table = tables.get(table_code)
+        if table is None or player_id == table["host_id"]:
+            return
+
+        table["players"] = [
+            player for player in table["players"] if player["id"] != player_id
+        ]
+        save_private_table(table_code, table, tables)
 
 
 def deal_private_table(table_code):
@@ -397,6 +495,7 @@ def deal_private_table(table_code):
 
         table["players"] = draw_cards_for_players(table["players"])
         table["status"] = "dealt"
+        table["locked"] = True
         table["draw_id"] = secrets.token_hex(6)
         save_private_table(table_code, table, tables)
 
@@ -410,6 +509,13 @@ def leave_private_table():
     """Forget the table on this browser without deleting it for others."""
     st.session_state.pop("private_table_code", None)
     st.query_params.clear()
+
+
+def return_to_title():
+    """Leave the current view while keeping any private-table seat reserved."""
+    st.session_state.pop("private_table_code", None)
+    st.query_params.clear()
+    st.session_state.title_screen_complete = False
 
 
 @st.cache_data
@@ -642,6 +748,10 @@ def show_title_screen(local_storage):
     )
 
     st.toggle(tr("Music", "音楽"), key="music_enabled")
+    st.toggle(
+        tr("Reduce animations", "アニメーションを減らす"),
+        key="reduced_motion",
+    )
     play_scene_music("title")
 
     st.text_input(
@@ -709,6 +819,13 @@ def show_card(result, is_winner=False, animation_index=0):
     rank = card["rank"]
     suit = card["suit"]
     card_data = card_image_data(rank, suit)
+    if st.session_state.get("reduced_motion", False):
+        motion_style = "opacity: 1;"
+    else:
+        motion_style = (
+            "opacity: 0; animation: deal-card 0.48s ease-out forwards; "
+            f"animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;"
+        )
 
     st.markdown(
         f"""
@@ -723,13 +840,18 @@ def show_card(result, is_winner=False, animation_index=0):
                     transform: translateY(0) rotate(0) scale(1);
                 }}
             }}
+            @media (prefers-reduced-motion: reduce) {{
+                .dealt-card {{
+                    animation: none !important;
+                    opacity: 1 !important;
+                    transform: none !important;
+                }}
+            }}
         </style>
-        <div style="
+        <div class="dealt-card" style="
             text-align: center;
             margin: 8px 0 22px;
-            opacity: 0;
-            animation: deal-card 0.48s ease-out forwards;
-            animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;
+            {motion_style}
         ">
             <div style="font-size: 1rem; color: #57606a;">{winner_label}</div>
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{player_name}</div>
@@ -758,6 +880,13 @@ def show_card(result, is_winner=False, animation_index=0):
 def show_hidden_card(player_name, animation_index=0):
     """Show a playing-card back without revealing the other player's card."""
     safe_name = html.escape(player_name)
+    if st.session_state.get("reduced_motion", False):
+        motion_style = "opacity: 1;"
+    else:
+        motion_style = (
+            "opacity: 0; animation: deal-hidden-card 0.48s ease-out forwards; "
+            f"animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;"
+        )
 
     st.markdown(
         f"""
@@ -772,13 +901,18 @@ def show_hidden_card(player_name, animation_index=0):
                     transform: translateY(0) rotate(0) scale(1);
                 }}
             }}
+            @media (prefers-reduced-motion: reduce) {{
+                .dealt-card {{
+                    animation: none !important;
+                    opacity: 1 !important;
+                    transform: none !important;
+                }}
+            }}
         </style>
-        <div style="
+        <div class="dealt-card" style="
             text-align: center;
             margin: 8px 0 22px;
-            opacity: 0;
-            animation: deal-hidden-card 0.48s ease-out forwards;
-            animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;
+            {motion_style}
         ">
             <div style="font-size: 1rem; color: #57606a;">{tr("Hidden card", "伏せられたカード")}</div>
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{safe_name}</div>
@@ -820,6 +954,121 @@ def show_hidden_card(player_name, animation_index=0):
     )
 
 
+def show_seat_map(results, winner):
+    """Show the table order and mark the first dealer."""
+    seat_nodes = []
+    player_count = len(results)
+
+    for index, result in enumerate(results):
+        angle = (2 * math.pi * index / player_count) - (math.pi / 2)
+        left = 50 + 43 * math.cos(angle)
+        top = 50 + 43 * math.sin(angle)
+        is_dealer = result == winner
+        player_name = html.escape(result["player"])
+        dealer_badge = (
+            f'<span class="dealer-badge">{tr("DEALER", "ディーラー")}</span>'
+            if is_dealer
+            else ""
+        )
+        dealer_class = " dealer-seat" if is_dealer else ""
+        seat_nodes.append(
+            f'<div class="poker-seat{dealer_class}" '
+            f'style="left:{left:.2f}%;top:{top:.2f}%;">'
+            f'{dealer_badge}<span class="seat-name">{player_name}</span></div>'
+        )
+
+    center_text = tr("FIRST DEALER", "最初のディーラー")
+    st.markdown(
+        textwrap.dedent(
+            f"""
+        <div class="seat-map" aria-label="{center_text}">
+            <div class="table-felt">
+                <div class="table-center">{center_text}</div>
+            </div>
+            {''.join(seat_nodes)}
+        </div>
+        <style>
+            .seat-map {{
+                position: relative;
+                width: min(100%, 520px);
+                aspect-ratio: 1;
+                margin: 12px auto 28px;
+            }}
+            .table-felt {{
+                position: absolute;
+                inset: 10%;
+                border: 8px solid #d1b06b;
+                border-radius: 50%;
+                background: #176346;
+                box-shadow: inset 0 0 0 3px #0f4935;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+            .table-center {{
+                max-width: 44%;
+                color: #ffffff;
+                font-size: 0.85rem;
+                font-weight: 800;
+                text-align: center;
+            }}
+            .poker-seat {{
+                position: absolute;
+                transform: translate(-50%, -50%);
+                width: 84px;
+                min-height: 42px;
+                padding: 6px;
+                box-sizing: border-box;
+                border: 2px solid #b8b8b8;
+                border-radius: 8px;
+                background: #ffffff;
+                color: #1f2937;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 3px 8px rgba(31, 41, 55, 0.18);
+                text-align: center;
+            }}
+            .dealer-seat {{
+                border: 3px solid #f5c542;
+                background: #123f32;
+                color: #ffffff;
+            }}
+            .dealer-badge {{
+                color: #f5c542;
+                font-size: 0.62rem;
+                font-weight: 800;
+            }}
+            .seat-name {{
+                display: block;
+                width: 100%;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-size: 0.76rem;
+                font-weight: 700;
+            }}
+            @media (max-width: 520px) {{
+                .poker-seat {{
+                    width: 72px;
+                    min-height: 38px;
+                    padding: 4px;
+                }}
+                .seat-name {{
+                    font-size: 0.68rem;
+                }}
+                .table-center {{
+                    font-size: 0.72rem;
+                }}
+            }}
+        </style>
+        """
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_private_device_mode():
     """Let each player use their own browser and see only their own card."""
     st.subheader(tr("Private Device Mode", "各自の端末モード"))
@@ -829,9 +1078,6 @@ def _render_private_device_mode():
             "全員が自分の端末でアプリを開き、同じコードのテーブルに参加します。自分のカードだけを見ることができます。",
         )
     )
-
-    if "private_player_id" not in st.session_state:
-        st.session_state.private_player_id = secrets.token_hex(8)
 
     if not st.session_state.get("host_name", "").strip():
         st.session_state.host_name = preferred_nickname(tr("Host", "ホスト"))
@@ -956,59 +1202,169 @@ def _render_private_device_mode():
     else:
         play_scene_music("gameplay")
 
-    st.metric(tr("Table code", "テーブルコード"), table_code)
-    st.caption(
-        tr(
-            "Share this QR code. Each person joins from their own device.",
-            "このQRコードを共有し、各自の端末から参加してください。",
-        )
-    )
-    share_url = f"{LIVE_APP_URL}?table={table_code}"
-    st.image(
-        qr_code_image(share_url),
-        width=180,
-        caption=tr("Scan to join", "読み取って参加"),
-    )
-    st.write(
-        tr(
-            f"Players: {len(table['players'])} / {table['number_of_players']}",
-            f"参加者: {len(table['players'])} / {table['number_of_players']}",
-        )
-    )
-
     if table["status"] == "waiting":
-        st.write(tr("Waiting for everyone to join.", "全員の参加を待っています。"))
+        is_host = table["host_id"] == player_id
+        is_locked = table.get("locked", False)
+        current_ready = current_player.get("ready", False)
+        all_ready = all(player.get("ready", False) for player in table["players"])
+        share_url = f"{LIVE_APP_URL}?table={table_code}"
+
+        if is_host:
+            st.subheader(tr("Host Lobby", "ホストロビー"))
+            st.markdown(
+                f"""
+                <div style="
+                    width: 100%;
+                    padding: 16px;
+                    box-sizing: border-box;
+                    background: #124c3a;
+                    color: #ffffff;
+                    border-left: 5px solid #f5c542;
+                    text-align: center;
+                ">
+                    <div style="font-size: 0.9rem; font-weight: 700;">
+                        {tr("TABLE CODE", "テーブルコード")}
+                    </div>
+                    <div style="
+                        margin-top: 4px;
+                        font-size: 2rem;
+                        font-weight: 800;
+                        letter-spacing: 0;
+                    ">{table_code}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                tr(
+                    "Show this QR code to everyone joining from their phone.",
+                    "参加者にこのQRコードを見せて、スマホから入ってもらいます。",
+                )
+            )
+            st.image(
+                qr_code_image(share_url),
+                width=260,
+                caption=tr("Scan to join", "読み取って参加"),
+            )
+        else:
+            st.subheader(tr("Waiting Room", "待機ルーム"))
+            st.metric(tr("Table code", "テーブルコード"), table_code)
+            if is_locked:
+                st.warning(
+                    tr(
+                        "The host has locked new joins.",
+                        "ホストが新しい参加を締め切りました。",
+                    )
+                )
+
+        st.write(
+            tr(
+                f"Players: {len(table['players'])} / {table['number_of_players']}",
+                f"参加者: {len(table['players'])} / {table['number_of_players']}",
+            )
+        )
         st.table(
             [
                 {
                     tr("Player", "プレイヤー"): player["name"],
-                    tr("Status", "状態"): tr("joined", "参加済み"),
+                    tr("Role", "役割"): (
+                        tr("Host", "ホスト")
+                        if player["id"] == table["host_id"]
+                        else tr("Player", "参加者")
+                    ),
+                    tr("Status", "状態"): (
+                        tr("Ready", "準備OK")
+                        if player.get("ready", False)
+                        else tr("Not ready", "準備中")
+                    ),
                 }
                 for player in table["players"]
             ]
         )
 
-        is_host = table["host_id"] == player_id
+        ready_label = (
+            tr("Cancel ready", "準備OKを取り消す")
+            if current_ready
+            else tr("I'm ready", "準備OK")
+        )
+        if st.button(
+            ready_label,
+            type="primary" if not current_ready else "secondary",
+            use_container_width=True,
+        ):
+            set_player_ready(table_code, player_id, not current_ready)
+            st.rerun()
+
         if is_host:
-            if len(table["players"]) < table["number_of_players"]:
-                players_needed = table["number_of_players"] - len(table["players"])
+            lock_column, refresh_column = st.columns(2)
+            with lock_column:
+                lock_label = (
+                    tr("Unlock room", "ロックを解除")
+                    if is_locked
+                    else tr("Lock room", "参加を締め切る")
+                )
+                if st.button(lock_label, use_container_width=True):
+                    set_table_locked(table_code, not is_locked)
+                    st.rerun()
+
+            with refresh_column:
+                if st.button(
+                    tr("Refresh table", "テーブルを更新"),
+                    use_container_width=True,
+                    key="host_refresh_table",
+                ):
+                    st.rerun()
+
+            removable_players = [
+                player
+                for player in table["players"]
+                if player["id"] != table["host_id"]
+            ]
+            if removable_players:
+                player_names_by_id = {
+                    player["id"]: player["name"] for player in removable_players
+                }
+                remove_player_id = st.selectbox(
+                    tr("Player management", "参加者を管理"),
+                    list(player_names_by_id),
+                    format_func=lambda value: player_names_by_id[value],
+                )
+                if st.button(
+                    tr("Remove selected player", "選択した参加者を退出させる")
+                ):
+                    remove_table_player(table_code, remove_player_id)
+                    st.rerun()
+
+            can_deal = is_locked and len(table["players"]) >= 2 and all_ready
+            if not is_locked:
                 st.warning(
                     tr(
-                        f"Waiting for {players_needed} more player(s) before dealing.",
-                        f"あと{players_needed}人の参加を待っています。",
+                        "Lock the room when everyone has joined.",
+                        "全員参加したら「参加を締め切る」を押してください。",
+                    )
+                )
+            elif len(table["players"]) < 2:
+                st.warning(tr("At least two players are required.", "2人以上必要です。"))
+            elif not all_ready:
+                st.warning(
+                    tr(
+                        "Waiting for every player to be ready.",
+                        "全員が準備OKになるのを待っています。",
                     )
                 )
             else:
                 st.success(
                     tr(
-                        "Everyone is seated. Deal cards when the table is ready.",
-                        "全員そろいました。準備ができたらカードを配ってください。",
+                        "Everyone is ready. Deal when you want to start.",
+                        "全員準備OKです。開始するときにカードを配ってください。",
                     )
                 )
 
-            if len(table["players"]) >= table["number_of_players"] and st.button(
+            if st.button(
                 tr("Deal cards", "カードを配る"),
                 type="primary",
+                disabled=not can_deal,
+                use_container_width=True,
             ):
                 deal_private_table(table_code)
                 st.rerun()
@@ -1019,9 +1375,12 @@ def _render_private_device_mode():
                     "ホストが配ったか確認するには更新ボタンを押してください。",
                 )
             )
-
-        if st.button(tr("Refresh table", "テーブルを更新")):
-            st.rerun()
+            if st.button(
+                tr("Refresh table", "テーブルを更新"),
+                use_container_width=True,
+                key="player_refresh_table",
+            ):
+                st.rerun()
 
     else:
         st.subheader(tr("Your Card", "あなたのカード"))
@@ -1085,6 +1444,8 @@ def render_private_device_mode():
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
 local_storage = LocalStorage(key="poker_high_card_storage")
+load_or_create_player_id(local_storage)
+
 if "language" not in st.session_state:
     st.session_state.language = "日本語"
 
@@ -1092,6 +1453,9 @@ if "music_defaults_v2_applied" not in st.session_state:
     # Start quietly. Music plays only after the visitor turns it on.
     st.session_state.music_enabled = False
     st.session_state.music_defaults_v2_applied = True
+
+if "reduced_motion" not in st.session_state:
+    st.session_state.reduced_motion = False
 
 if "nickname" not in st.session_state:
     stored_nickname = local_storage.getItem(NICKNAME_STORAGE_KEY)
@@ -1103,6 +1467,8 @@ if "nickname" not in st.session_state:
     st.session_state.nickname_saved = bool(st.session_state.nickname)
 elif "nickname_saved" not in st.session_state:
     st.session_state.nickname_saved = bool(preferred_nickname(""))
+
+restore_private_table_session()
 
 if not st.session_state.get("title_screen_complete"):
     show_title_screen(local_storage)
@@ -1117,9 +1483,11 @@ st.write(
 )
 
 with st.sidebar:
-    if st.button(tr("Back to title", "タイトルへ戻る"), use_container_width=True):
-        st.session_state.title_screen_complete = False
-        st.rerun()
+    st.button(
+        tr("Back to title", "タイトルへ戻る"),
+        use_container_width=True,
+        on_click=return_to_title,
+    )
 
     st.radio(
         "Language / 言語",
@@ -1128,6 +1496,10 @@ with st.sidebar:
         horizontal=True,
     )
     st.toggle(tr("Music", "音楽"), key="music_enabled")
+    st.toggle(
+        tr("Reduce animations", "アニメーションを減らす"),
+        key="reduced_motion",
+    )
 
     st.header(tr("Rules", "ルール"))
     st.write(
@@ -1288,7 +1660,8 @@ if "results" in st.session_state:
                 draw_id
                 and st.session_state.get("celebrated_draw_id") != draw_id
             ):
-                st.balloons()
+                if not st.session_state.get("reduced_motion", False):
+                    st.balloons()
                 st.session_state.celebrated_draw_id = draw_id
 
         st.subheader(tr("Winner", "勝者"))
@@ -1306,6 +1679,9 @@ if "results" in st.session_state:
                 "カードは数字を先に比べ、同じ数字の場合はスートを比べます。",
             )
         )
+
+        st.subheader(tr("Seat Order", "席順"))
+        show_seat_map(results, winner)
 
         st.subheader(tr("Cards Drawn", "引いたカード"))
 

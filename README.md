@@ -14,9 +14,11 @@ Live app: https://poker-high-card.streamlit.app/
 - Draw one unique card per player.
 - Choose a play style directly from the title screen.
 - Save your nickname automatically when a play style is selected.
+- Restore the same private-table seat after a browser reload.
 - Switch between Japanese and English, with Japanese shown first.
 - Choose Private device mode so each person can join from their own browser and see only their own card.
 - Join a private table by scanning its QR code.
+- Use a dedicated host lobby with Ready states, room locking, and player removal.
 - Keep private tables available across app restarts with Supabase.
 - Use table codes without ambiguous `0/O` or `1/I` characters.
 - Remove inactive private tables automatically after 24 hours.
@@ -29,7 +31,9 @@ Live app: https://poker-high-card.streamlit.app/
 - Break rank ties by suit.
 - Show every player's card with a consistent illustrated English-pattern deck.
 - Animate cards as they are dealt.
+- Reduce animations manually or through the device accessibility preference.
 - Highlight the winner.
+- Show a circular seat map with the first dealer marked.
 - Celebrate your first-place draw with a large message, balloons, and result fanfare.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
