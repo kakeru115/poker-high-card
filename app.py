@@ -3,6 +3,7 @@ import html
 import io
 import json
 import math
+import os
 import random
 import re
 import secrets
@@ -12,6 +13,8 @@ import wave
 from pathlib import Path
 from urllib.parse import quote
 
+import qrcode
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from filelock import FileLock
@@ -31,6 +34,12 @@ SUIT_SYMBOLS = {
     "Hearts": "♥",
     "Diamonds": "♦",
     "Clubs": "♣",
+}
+SUIT_NAMES_JA = {
+    "Spades": "スペード",
+    "Hearts": "ハート",
+    "Diamonds": "ダイヤ",
+    "Clubs": "クラブ",
 }
 
 AUTO_JUDGE_MODE = "Auto judge"
@@ -57,6 +66,26 @@ LINKEDIN_SHARE_URL = (
 NICKNAME_STORAGE_KEY = "poker_high_card_nickname"
 
 
+def is_japanese():
+    """Return True when the Japanese interface is selected."""
+    return st.session_state.get("language", "日本語") == "日本語"
+
+
+def tr(english, japanese):
+    """Choose text for the current interface language."""
+    return japanese if is_japanese() else english
+
+
+def mode_label(mode):
+    """Translate the three internal play-mode names."""
+    labels = {
+        PRIVATE_DEVICE_MODE: tr("Private device", "各自の端末"),
+        TABLE_MODE: tr("Table draw", "みんなで判定"),
+        AUTO_JUDGE_MODE: tr("Auto judge", "自動判定"),
+    }
+    return labels[mode]
+
+
 def create_deck():
     """Create a standard 52-card deck."""
     deck = []
@@ -77,13 +106,17 @@ def strength_label(card):
     """Explain the strength that is used to compare this card."""
     rank_points = RANK_STRENGTH[card["rank"]] + 1
     suit_points = SUIT_STRENGTH[card["suit"]] + 1
-    return f"Rank strength {rank_points}, suit strength {suit_points}"
+    return tr(
+        f"Rank strength {rank_points}, suit strength {suit_points}",
+        f"数字の強さ {rank_points}、スートの強さ {suit_points}",
+    )
 
 
 def format_card(card):
     """Create a friendly card label for display."""
     symbol = SUIT_SYMBOLS[card["suit"]]
-    return f"{card['rank']} {symbol} {card['suit']}"
+    suit_name = SUIT_NAMES_JA[card["suit"]] if is_japanese() else card["suit"]
+    return f"{card['rank']} {symbol} {suit_name}"
 
 
 def draw_cards(player_names):
@@ -135,11 +168,6 @@ def preferred_nickname(default="Player"):
     return st.session_state.get("nickname", "").strip() or default
 
 
-def nickname_changed():
-    """Require a fresh save when the nickname text is edited."""
-    st.session_state.nickname_saved = False
-
-
 def remember_nickname(local_storage):
     """Save the nickname in this browser for future visits."""
     nickname = preferred_nickname()
@@ -156,15 +184,44 @@ def remember_nickname(local_storage):
     )
 
 
-def enter_play_mode(mode):
-    """Continue directly to the selected mode after the nickname is saved."""
+def remember_nickname_and_enter(local_storage, mode):
+    """Save the nickname automatically when a play style is chosen."""
+    remember_nickname(local_storage)
     st.session_state.play_style = mode
     st.session_state.title_screen_complete = True
-    st.rerun()
+
+
+def supabase_settings():
+    """Read credentials exposed by Streamlit's top-level secrets."""
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+    if not url or not key:
+        return None
+
+    return {
+        "url": url,
+        "headers": {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    }
 
 
 def load_private_tables():
-    """Load private tables from a small local JSON file."""
+    """Load shared tables from Supabase, or local JSON during development."""
+    settings = supabase_settings()
+    if settings:
+        response = requests.get(
+            f"{settings['url']}/rest/v1/poker_tables",
+            headers=settings["headers"],
+            params={"select": "code,table_data"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return {row["code"]: row["table_data"] for row in response.json()}
+
     with TABLES_LOCK:
         if not TABLES_FILE.exists():
             return {}
@@ -173,8 +230,24 @@ def load_private_tables():
             return json.load(file)
 
 
-def save_private_tables(tables):
-    """Save private tables so different browsers can share the same table."""
+def save_private_table(table_code, table, tables):
+    """Save one shared table without overwriting unrelated Supabase rooms."""
+    settings = supabase_settings()
+    if settings:
+        headers = {
+            **settings["headers"],
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        }
+        response = requests.post(
+            f"{settings['url']}/rest/v1/poker_tables",
+            headers=headers,
+            params={"on_conflict": "code"},
+            json={"code": table_code, "table_data": table},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return
+
     with TABLES_LOCK:
         # Write a complete temporary file first, then replace the old file at once.
         # This prevents another browser from reading a half-written table file.
@@ -218,7 +291,7 @@ def create_private_table(number_of_players, host_name):
             ],
         }
 
-        save_private_tables(tables)
+        save_private_table(table_code, tables[table_code], tables)
 
     st.session_state.private_table_code = table_code
     st.query_params["table"] = table_code
@@ -228,30 +301,39 @@ def join_private_table(table_code, player_name):
     """Join an existing private table from a different browser session."""
     table_code = clean_table_code(table_code)
     if not table_code:
-        return "Enter a table code."
+        return tr("Enter a table code.", "テーブルコードを入力してください。")
 
     with TABLES_LOCK:
         tables = load_private_tables()
         table = tables.get(table_code)
 
         if table is None:
-            return "That table code was not found. Check the code with the host and try again."
+            return tr(
+                "That table code was not found. Check the code with the host and try again.",
+                "テーブルが見つかりません。ホストにコードを確認してください。",
+            )
 
         if table["status"] == "dealt":
-            return "Cards have already been dealt for that table."
+            return tr(
+                "Cards have already been dealt for that table.",
+                "このテーブルではすでにカードが配られています。",
+            )
 
         player_id = st.session_state.private_player_id
         for player in table["players"]:
             if player["id"] == player_id:
                 player["name"] = player_name
-                save_private_tables(tables)
+                save_private_table(table_code, table, tables)
                 break
         else:
             if len(table["players"]) >= table["number_of_players"]:
-                return "That table is already full."
+                return tr(
+                    "That table is already full.",
+                    "このテーブルは満席です。",
+                )
 
             table["players"].append({"id": player_id, "name": player_name, "card": None})
-            save_private_tables(tables)
+            save_private_table(table_code, table, tables)
 
     st.session_state.private_table_code = table_code
     st.query_params["table"] = table_code
@@ -270,7 +352,7 @@ def deal_private_table(table_code):
         table["players"] = draw_cards_for_players(table["players"])
         table["status"] = "dealt"
         table["draw_id"] = secrets.token_hex(6)
-        save_private_tables(tables)
+        save_private_table(table_code, table, tables)
 
 
 def redeal_private_table(table_code):
@@ -288,6 +370,15 @@ def leave_private_table():
 def title_image_data():
     """Read the title artwork once and turn it into an embeddable image."""
     return base64.b64encode(TITLE_IMAGE.read_bytes()).decode("ascii")
+
+
+@st.cache_data
+def qr_code_image(url):
+    """Create a QR code that opens the shared table URL."""
+    image = qrcode.make(url)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def synthesize_music(events):
@@ -442,6 +533,13 @@ def show_title_screen(local_storage):
     """Show the nickname and play-style choices on the opening screen."""
     background = title_image_data()
 
+    st.radio(
+        "Language / 言語",
+        ["日本語", "English"],
+        key="language",
+        horizontal=True,
+    )
+
     st.markdown(
         f"""
         <style>
@@ -491,60 +589,55 @@ def show_title_screen(local_storage):
         </style>
         <div class="poker-title-screen">
             <h1>Poker High Card</h1>
-            <p>Choose the first dealer.</p>
+            <p>{tr("Choose the first dealer.", "最初のディーラーを決めよう。")}</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.toggle("Music", key="music_enabled")
+    st.toggle(tr("Music", "音楽"), key="music_enabled")
     play_scene_music("title")
 
     st.text_input(
-        "Your nickname",
+        tr("Your nickname", "ニックネーム"),
         key="nickname",
-        placeholder="Enter the name everyone calls you",
+        placeholder=tr(
+            "Enter the name everyone calls you",
+            "みんなから呼ばれている名前",
+        ),
         max_chars=24,
-        on_change=nickname_changed,
     )
-    nickname_is_saved = st.session_state.get("nickname_saved", False)
-    st.button(
-        "Nickname remembered"
-        if nickname_is_saved
-        else "Remember nickname on this device",
-        on_click=remember_nickname,
-        args=(local_storage,),
-        disabled=nickname_is_saved,
-        use_container_width=True,
-    )
-    st.markdown("**Choose a play style**")
-    modes_disabled = not nickname_is_saved
+    st.markdown(tr("**Choose a play style**", "**遊び方を選ぶ**"))
+    modes_disabled = not st.session_state.nickname.strip()
 
     private_column, table_column, judge_column = st.columns(3)
     with private_column:
-        if st.button(
-            "Private device",
+        st.button(
+            tr("Private device", "各自の端末"),
             type="primary",
             disabled=modes_disabled,
             use_container_width=True,
-        ):
-            enter_play_mode(PRIVATE_DEVICE_MODE)
+            on_click=remember_nickname_and_enter,
+            args=(local_storage, PRIVATE_DEVICE_MODE),
+        )
 
     with table_column:
-        if st.button(
-            "Table draw",
+        st.button(
+            tr("Table draw", "みんなで判定"),
             disabled=modes_disabled,
             use_container_width=True,
-        ):
-            enter_play_mode(TABLE_MODE)
+            on_click=remember_nickname_and_enter,
+            args=(local_storage, TABLE_MODE),
+        )
 
     with judge_column:
-        if st.button(
-            "Auto judge",
+        st.button(
+            tr("Auto judge", "自動判定"),
             disabled=modes_disabled,
             use_container_width=True,
-        ):
-            enter_play_mode(AUTO_JUDGE_MODE)
+            on_click=remember_nickname_and_enter,
+            args=(local_storage, AUTO_JUDGE_MODE),
+        )
 
 
 @st.cache_data
@@ -557,19 +650,41 @@ def card_image_data(rank, suit):
     return base64.b64encode(card_path.read_bytes()).decode("ascii")
 
 
-def show_card(result, is_winner=False):
+def show_card(result, is_winner=False, animation_index=0):
     """Display the matching card from one consistent classic deck."""
     card = result["card"]
     player_name = html.escape(result["player"])
     border_color = "#15803d" if is_winner else "#c8c8c8"
-    winner_label = "Winner" if is_winner else "Drawn card"
+    winner_label = (
+        tr("Winner", "勝者")
+        if is_winner
+        else tr("Drawn card", "引いたカード")
+    )
     rank = card["rank"]
     suit = card["suit"]
     card_data = card_image_data(rank, suit)
 
     st.markdown(
         f"""
-        <div style="text-align: center; margin: 8px 0 22px;">
+        <style>
+            @keyframes deal-card {{
+                from {{
+                    opacity: 0;
+                    transform: translateY(-28px) rotate(-3deg) scale(0.94);
+                }}
+                to {{
+                    opacity: 1;
+                    transform: translateY(0) rotate(0) scale(1);
+                }}
+            }}
+        </style>
+        <div style="
+            text-align: center;
+            margin: 8px 0 22px;
+            opacity: 0;
+            animation: deal-card 0.48s ease-out forwards;
+            animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;
+        ">
             <div style="font-size: 1rem; color: #57606a;">{winner_label}</div>
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{player_name}</div>
             <img
@@ -594,14 +709,32 @@ def show_card(result, is_winner=False):
     )
 
 
-def show_hidden_card(player_name):
+def show_hidden_card(player_name, animation_index=0):
     """Show a playing-card back without revealing the other player's card."""
     safe_name = html.escape(player_name)
 
     st.markdown(
         f"""
-        <div style="text-align: center; margin: 8px 0 22px;">
-            <div style="font-size: 1rem; color: #57606a;">Hidden card</div>
+        <style>
+            @keyframes deal-hidden-card {{
+                from {{
+                    opacity: 0;
+                    transform: translateY(-28px) rotate(3deg) scale(0.94);
+                }}
+                to {{
+                    opacity: 1;
+                    transform: translateY(0) rotate(0) scale(1);
+                }}
+            }}
+        </style>
+        <div style="
+            text-align: center;
+            margin: 8px 0 22px;
+            opacity: 0;
+            animation: deal-hidden-card 0.48s ease-out forwards;
+            animation-delay: {min(animation_index * 0.12, 1.2):.2f}s;
+        ">
+            <div style="font-size: 1rem; color: #57606a;">{tr("Hidden card", "伏せられたカード")}</div>
             <div style="font-size: 1.15rem; font-weight: 700; margin: 2px 0 10px;">{safe_name}</div>
             <div style="
                 box-sizing: border-box;
@@ -633,7 +766,7 @@ def show_hidden_card(player_name):
                 ">♠ ♥<br>♦ ♣</div>
             </div>
             <div style="color: #57606a; font-size: 0.95rem; margin-top: 8px;">
-                Only they can see the front
+                {tr("Only they can see the front", "表を見られるのは本人だけ")}
             </div>
         </div>
         """,
@@ -643,18 +776,21 @@ def show_hidden_card(player_name):
 
 def render_private_device_mode():
     """Let each player use their own browser and see only their own card."""
-    st.subheader("Private Device Mode")
+    st.subheader(tr("Private Device Mode", "各自の端末モード"))
     st.info(
-        "Everyone opens this app on their own device. Join the same table code, then each browser shows only that player's card."
+        tr(
+            "Everyone opens this app on their own device. Join the same table code, then each browser shows only that player's card.",
+            "全員が自分の端末でアプリを開き、同じコードのテーブルに参加します。自分のカードだけを見ることができます。",
+        )
     )
 
     if "private_player_id" not in st.session_state:
         st.session_state.private_player_id = secrets.token_hex(8)
 
-    if "host_name" not in st.session_state:
-        st.session_state.host_name = preferred_nickname("Host")
-    if "join_name" not in st.session_state:
-        st.session_state.join_name = preferred_nickname()
+    if not st.session_state.get("host_name", "").strip():
+        st.session_state.host_name = preferred_nickname(tr("Host", "ホスト"))
+    if not st.session_state.get("join_name", "").strip():
+        st.session_state.join_name = preferred_nickname(tr("Player", "プレイヤー"))
 
     # Older links included a private player ID. Remove it so each browser gets
     # its own identity instead of accidentally joining as the host.
@@ -672,34 +808,40 @@ def render_private_device_mode():
             create_column, join_column = st.columns(2)
 
             with create_column:
-                st.markdown("**Create a table**")
+                st.markdown(tr("**Create a table**", "**テーブルを作る**"))
                 private_player_count = st.slider(
-                    "Private table players",
+                    tr("Private table players", "参加人数"),
                     min_value=2,
                     max_value=10,
                     value=6,
                     key="private_player_count",
                 )
-                host_name = st.text_input("Your name", key="host_name")
+                host_name = st.text_input(
+                    tr("Your name", "あなたの名前"),
+                    key="host_name",
+                )
 
-                if st.button("Create table", type="primary"):
-                    clean_name = host_name.strip() or "Host"
+                if st.button(tr("Create table", "テーブルを作る"), type="primary"):
+                    clean_name = host_name.strip() or tr("Host", "ホスト")
                     create_private_table(private_player_count, clean_name)
                     table_code = st.session_state.private_table_code
                     joined_or_created = True
 
             with join_column:
-                st.markdown("**Join a table**")
+                st.markdown(tr("**Join a table**", "**テーブルに入る**"))
                 join_code = st.text_input(
-                    "Table code",
+                    tr("Table code", "テーブルコード"),
                     value=shared_table_code,
                     key="join_code",
                     max_chars=12,
                 )
-                join_name = st.text_input("Your name", key="join_name")
+                join_name = st.text_input(
+                    tr("Your name", "あなたの名前"),
+                    key="join_name",
+                )
 
-                if st.button("Join table"):
-                    clean_name = join_name.strip() or "Player"
+                if st.button(tr("Join table", "参加する")):
+                    clean_name = join_name.strip() or tr("Player", "プレイヤー")
                     error = join_private_table(join_code, clean_name)
 
                     if error:
@@ -720,11 +862,22 @@ def render_private_device_mode():
     if table is None:
         play_scene_music("gameplay")
         st.warning(
-            "This table code was not found. It may have expired after the app restarted or redeployed."
+            tr(
+                "This table code was not found. Check the code with the host and try again.",
+                "テーブルが見つかりません。ホストにコードを確認してください。",
+            )
         )
-        st.write("Create a new table and have everyone join the new code.")
+        st.write(
+            tr(
+                "Create a new table and have everyone join the new code.",
+                "新しいテーブルを作り、新しいコードで参加してください。",
+            )
+        )
 
-        if st.button("Create or join another table", type="primary"):
+        if st.button(
+            tr("Create or join another table", "別のテーブルを使う"),
+            type="primary",
+        ):
             leave_private_table()
             st.rerun()
 
@@ -739,8 +892,16 @@ def render_private_device_mode():
 
     if current_player is None:
         play_scene_music("gameplay")
-        st.error("This browser is not joined to that table.")
-        st.button("Leave table", on_click=leave_private_table)
+        st.error(
+            tr(
+                "This browser is not joined to that table.",
+                "この端末はテーブルに参加していません。",
+            )
+        )
+        st.button(
+            tr("Leave table", "テーブルから退出"),
+            on_click=leave_private_table,
+        )
         return
 
     if table["status"] == "dealt":
@@ -749,19 +910,33 @@ def render_private_device_mode():
     else:
         play_scene_music("gameplay")
 
-    st.metric("Table code", table_code)
+    st.metric(tr("Table code", "テーブルコード"), table_code)
     st.caption(
-        "Share this code or the current page URL. Each person must press Join table on their own device."
+        tr(
+            "Share this QR code or table code. Each person joins from their own device.",
+            "QRコードまたはテーブルコードを共有し、各自の端末から参加してください。",
+        )
     )
-    st.write(f"Players: {len(table['players'])} / {table['number_of_players']}")
+    share_url = f"{LIVE_APP_URL}?table={table_code}"
+    st.image(
+        qr_code_image(share_url),
+        width=180,
+        caption=tr("Scan to join", "読み取って参加"),
+    )
+    st.write(
+        tr(
+            f"Players: {len(table['players'])} / {table['number_of_players']}",
+            f"参加者: {len(table['players'])} / {table['number_of_players']}",
+        )
+    )
 
     if table["status"] == "waiting":
-        st.write("Waiting for everyone to join.")
+        st.write(tr("Waiting for everyone to join.", "全員の参加を待っています。"))
         st.table(
             [
                 {
-                    "Player": player["name"],
-                    "Status": "joined",
+                    tr("Player", "プレイヤー"): player["name"],
+                    tr("Status", "状態"): tr("joined", "参加済み"),
                 }
                 for player in table["players"]
             ]
@@ -771,43 +946,77 @@ def render_private_device_mode():
         if is_host:
             if len(table["players"]) < table["number_of_players"]:
                 players_needed = table["number_of_players"] - len(table["players"])
-                st.warning(f"Waiting for {players_needed} more player(s) before dealing.")
+                st.warning(
+                    tr(
+                        f"Waiting for {players_needed} more player(s) before dealing.",
+                        f"あと{players_needed}人の参加を待っています。",
+                    )
+                )
             else:
-                st.success("Everyone is seated. Deal cards when the table is ready.")
+                st.success(
+                    tr(
+                        "Everyone is seated. Deal cards when the table is ready.",
+                        "全員そろいました。準備ができたらカードを配ってください。",
+                    )
+                )
 
-            if len(table["players"]) >= table["number_of_players"] and st.button("Deal cards", type="primary"):
+            if len(table["players"]) >= table["number_of_players"] and st.button(
+                tr("Deal cards", "カードを配る"),
+                type="primary",
+            ):
                 deal_private_table(table_code)
                 st.rerun()
         else:
-            st.caption("Press Refresh table to check whether the host has dealt.")
+            st.caption(
+                tr(
+                    "Press Refresh table to check whether the host has dealt.",
+                    "ホストが配ったか確認するには更新ボタンを押してください。",
+                )
+            )
 
-        if st.button("Refresh table"):
+        if st.button(tr("Refresh table", "テーブルを更新")):
             st.rerun()
 
     else:
-        st.subheader("Your Card")
-        show_card({"player": current_player["name"], "card": current_player["card"]})
+        st.subheader(tr("Your Card", "あなたのカード"))
+        show_card(
+            {"player": current_player["name"], "card": current_player["card"]},
+            animation_index=0,
+        )
 
-        st.subheader("Table")
+        st.subheader(tr("Table", "テーブル"))
         card_columns = st.columns(2)
         for index, player in enumerate(table["players"]):
             with card_columns[index % 2]:
                 if player["id"] == player_id:
-                    show_card({"player": player["name"], "card": player["card"]})
+                    show_card(
+                        {"player": player["name"], "card": player["card"]},
+                        animation_index=index,
+                    )
                 else:
-                    show_hidden_card(player["name"])
+                    show_hidden_card(player["name"], animation_index=index)
 
         if table["host_id"] == player_id:
-            if st.button("Redeal same table"):
+            if st.button(
+                tr("Play again with the same table", "同じメンバーでもう一度"),
+                type="primary",
+                use_container_width=True,
+            ):
                 redeal_private_table(table_code)
                 st.rerun()
 
-    st.button("Leave table on this device", on_click=leave_private_table)
+    st.button(
+        tr("Leave table on this device", "この端末でテーブルから退出"),
+        on_click=leave_private_table,
+    )
 
 
 st.set_page_config(page_title="Poker High Card", page_icon="🂡", layout="centered")
 
 local_storage = LocalStorage(key="poker_high_card_storage")
+if "language" not in st.session_state:
+    st.session_state.language = "日本語"
+
 if "music_defaults_v2_applied" not in st.session_state:
     # Start quietly. Music plays only after the visitor turns it on.
     st.session_state.music_enabled = False
@@ -829,37 +1038,72 @@ if not st.session_state.get("title_screen_complete"):
     st.stop()
 
 st.title("Poker High Card")
-st.write("Draw one card for each player to decide the first dealer or button.")
+st.write(
+    tr(
+        "Draw one card for each player to decide the first dealer or button.",
+        "プレイヤーごとに1枚引いて、最初のディーラーやボタンを決めます。",
+    )
+)
 
 with st.sidebar:
-    if st.button("Back to title", use_container_width=True):
+    if st.button(tr("Back to title", "タイトルへ戻る"), use_container_width=True):
         st.session_state.title_screen_complete = False
         st.rerun()
 
-    st.toggle("Music", key="music_enabled")
+    st.radio(
+        "Language / 言語",
+        ["日本語", "English"],
+        key="language",
+        horizontal=True,
+    )
+    st.toggle(tr("Music", "音楽"), key="music_enabled")
 
-    st.header("Rules")
-    st.write("Highest rank wins. If ranks tie, the highest suit wins.")
-    st.write("Rank: A > K > Q > J > 10 > 9 > ... > 2")
-    st.write("Suit: Spades > Hearts > Diamonds > Clubs")
+    st.header(tr("Rules", "ルール"))
+    st.write(
+        tr(
+            "Highest rank wins. If ranks tie, the highest suit wins.",
+            "数字の強いカードが勝ちです。同じ数字ならスートで決めます。",
+        )
+    )
+    st.write(
+        tr(
+            "Rank: A > K > Q > J > 10 > 9 > ... > 2",
+            "数字: A > K > Q > J > 10 > 9 > ... > 2",
+        )
+    )
+    st.write(
+        tr(
+            "Suit: Spades > Hearts > Diamonds > Clubs",
+            "スート: スペード > ハート > ダイヤ > クラブ",
+        )
+    )
     st.link_button(
-        "Share on LinkedIn",
+        tr("Share on LinkedIn", "LinkedInで共有"),
         LINKEDIN_SHARE_URL,
         use_container_width=True,
     )
 
 app_mode = st.radio(
-    "Play style",
+    tr("Play style", "遊び方"),
     PLAY_MODES,
     key="play_style",
-    help="Private device mode shows each player only their own card. Table mode shows all cards without judging. Auto judge shows the winner and ranking.",
+    format_func=mode_label,
+    help=tr(
+        "Private device mode shows each player only their own card. Table mode shows all cards without judging. Auto judge shows the winner and ranking.",
+        "各自の端末では自分のカードだけを表示します。みんなで判定では勝者を表示しません。自動判定では勝者と順位を表示します。",
+    ),
 )
 
 if app_mode == PRIVATE_DEVICE_MODE:
     render_private_device_mode()
     st.stop()
 
-number_of_players = st.slider("Number of players", min_value=2, max_value=10, value=6)
+number_of_players = st.slider(
+    tr("Number of players", "プレイヤー数"),
+    min_value=2,
+    max_value=10,
+    value=6,
+)
 
 # If the player count changes, clear old results so the draw always matches the table.
 if st.session_state.get("previous_number_of_players") != number_of_players:
@@ -873,27 +1117,41 @@ for player_number in range(1, number_of_players + 1):
         st.session_state[player_key] = (
             preferred_nickname()
             if player_number == 1
-            else f"Player {player_number}"
+            else tr(f"Player {player_number}", f"プレイヤー {player_number}")
         )
 
-    name = st.text_input(f"Player {player_number} name", key=player_key)
+    name = st.text_input(
+        tr(
+            f"Player {player_number} name",
+            f"プレイヤー {player_number} の名前",
+        ),
+        key=player_key,
+    )
 
     # If a name is blank, use a simple default so the results always display clearly.
-    player_names.append(name.strip() or f"Player {player_number}")
+    player_names.append(
+        name.strip()
+        or tr(f"Player {player_number}", f"プレイヤー {player_number}")
+    )
 
 if len(set(player_names)) < len(player_names):
-    st.warning("Some players have the same name. The draw will still work, but unique names are easier to read.")
+    st.warning(
+        tr(
+            "Some players have the same name. The draw will still work, but unique names are easier to read.",
+            "同じ名前のプレイヤーがいます。抽選はできますが、違う名前の方が結果を見分けやすくなります。",
+        )
+    )
 
 draw_button, reset_button = st.columns(2)
 
 with draw_button:
-    if st.button("Draw cards", type="primary"):
+    if st.button(tr("Draw cards", "カードを引く"), type="primary"):
         st.session_state.results = draw_cards(player_names)
         st.session_state.draw_id = secrets.token_hex(6)
         st.rerun()
 
 with reset_button:
-    st.button("Reset", on_click=reset_draw)
+    st.button(tr("Reset", "リセット"), on_click=reset_draw)
 
 if "results" in st.session_state:
     play_scene_music("result", st.session_state.get("draw_id"))
@@ -904,15 +1162,25 @@ if "results" in st.session_state:
     results = st.session_state.results
 
     if app_mode == TABLE_MODE:
-        st.subheader("Table Draw")
-        st.info("Everyone drew from the same shuffled deck. Compare the cards together at the table.")
+        st.subheader(tr("Table Draw", "みんなで判定"))
+        st.info(
+            tr(
+                "Everyone drew from the same shuffled deck. Compare the cards together at the table.",
+                "全員が同じ山札から引きました。カードを見せ合って勝者を決めてください。",
+            )
+        )
 
         card_columns = st.columns(2)
         for index, result in enumerate(results):
             with card_columns[index % 2]:
-                show_card(result)
+                show_card(result, animation_index=index)
 
-        st.caption("No automatic winner is shown in Table mode.")
+        st.caption(
+            tr(
+                "No automatic winner is shown in Table mode.",
+                "このモードでは勝者を自動表示しません。",
+            )
+        )
 
     else:
         winner = find_winner(results)
@@ -922,6 +1190,10 @@ if "results" in st.session_state:
 
         if is_my_win:
             safe_nickname = html.escape(nickname)
+            celebration_text = tr(
+                f"{safe_nickname} is No. 1!",
+                f"{safe_nickname}が一位だよ！",
+            )
             st.markdown(
                 f"""
                 <div style="
@@ -935,7 +1207,7 @@ if "results" in st.session_state:
                     font-size: 2rem;
                     font-weight: 800;
                     line-height: 1.25;
-                ">{safe_nickname}が一位だよ！</div>
+                ">{celebration_text}</div>
                 """,
                 unsafe_allow_html=True,
             )
@@ -948,33 +1220,53 @@ if "results" in st.session_state:
                 st.balloons()
                 st.session_state.celebrated_draw_id = draw_id
 
-        st.subheader("Winner")
+        st.subheader(tr("Winner", "勝者"))
 
         winning_card = winner["card"]
-        st.success(f"{winner['player']} wins with {format_card(winning_card)}.")
+        st.success(
+            tr(
+                f"{winner['player']} wins with {format_card(winning_card)}.",
+                f"{winner['player']}の{format_card(winning_card)}が勝ちです。",
+            )
+        )
         st.caption(
-            "This card wins because cards are compared by rank first, then by suit if ranks are tied."
+            tr(
+                "Cards are compared by rank first, then by suit if ranks are tied.",
+                "カードは数字を先に比べ、同じ数字の場合はスートを比べます。",
+            )
         )
 
-        st.subheader("Cards Drawn")
+        st.subheader(tr("Cards Drawn", "引いたカード"))
 
         card_columns = st.columns(2)
         for index, result in enumerate(results):
             with card_columns[index % 2]:
-                show_card(result, is_winner=result == winner)
+                show_card(
+                    result,
+                    is_winner=result == winner,
+                    animation_index=index,
+                )
 
-        st.subheader("Ranking")
+        st.subheader(tr("Ranking", "順位"))
 
         table_rows = []
         for position, result in enumerate(ranked_results, start=1):
             card = result["card"]
             table_rows.append(
                 {
-                    "Place": position,
-                    "Player": result["player"],
-                    "Card": format_card(card),
-                    "Comparison": strength_label(card),
+                    tr("Place", "順位"): position,
+                    tr("Player", "プレイヤー"): result["player"],
+                    tr("Card", "カード"): format_card(card),
+                    tr("Comparison", "比較"): strength_label(card),
                 }
             )
 
         st.dataframe(table_rows, hide_index=True, use_container_width=True)
+
+    if st.button(
+        tr("Play again with the same players", "同じメンバーでもう一度"),
+        type="primary",
+        use_container_width=True,
+    ):
+        reset_draw()
+        st.rerun()

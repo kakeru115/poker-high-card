@@ -13,8 +13,11 @@ Live app: https://poker-high-card.streamlit.app/
 - Build a standard 52-card deck.
 - Draw one unique card per player.
 - Choose a play style directly from the title screen.
-- Remember your nickname in the browser and prefill your player name.
+- Save your nickname automatically when a play style is selected.
+- Switch between Japanese and English, with Japanese shown first.
 - Choose Private device mode so each person can join from their own browser and see only their own card.
+- Join a private table by scanning its QR code.
+- Keep private tables available across app restarts with Supabase.
 - Choose Table mode to show cards only and let everyone judge together.
 - Choose Auto judge mode to show the winner and ranking automatically.
 - Hear original music for the title screen, gameplay, and result reveal.
@@ -22,11 +25,12 @@ Live app: https://poker-high-card.streamlit.app/
 - Compare cards by poker high-card rules.
 - Break rank ties by suit.
 - Show every player's card with a consistent illustrated English-pattern deck.
+- Animate cards as they are dealt.
 - Highlight the winner.
 - Celebrate your first-place draw with a large message, balloons, and result fanfare.
 - Show a ranked results table with comparison details.
 - Warn when multiple players have the same name.
-- Reset the draw and start again.
+- Play another round with the same players.
 
 ## Card Strength
 
@@ -42,6 +46,7 @@ If two players draw the same rank, suits are compared in this order:
 
 - Python
 - Streamlit
+- Supabase
 - Browser Local Storage
 
 ## Card Artwork
@@ -67,11 +72,20 @@ streamlit run app.py
 
 Then open the local URL shown in your terminal.
 
-For Private device mode, have each player open the app from their own device or browser session. The host creates a table, then shares the six-character code or the page URL. The shared URL contains only the table code, so every player still joins with their own name and receives a separate private identity. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
+For Private device mode, have each player open the app from their own device or browser session. The host creates a table, then shares the QR code, six-character code, or page URL. The shared URL contains only the table code, so every player still joins with their own name and receives a separate private identity. Players can press Refresh table while waiting. When the table is full, the host presses Deal cards to start.
 
-Table updates use a file lock and an atomic file replacement so two players joining at nearly the same time do not overwrite each other.
+## Supabase Setup
 
-Private table codes are temporary. If the app restarts or redeploys, create a new table and share the new code.
+1. Create a Supabase project.
+2. Run `supabase_schema.sql` in the Supabase SQL Editor.
+3. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`.
+4. Add the project URL and service-role key.
+
+Streamlit Community Cloud uses the same two values in the app's **Secrets**
+settings. The service-role key must never be committed to GitHub.
+
+When Supabase secrets are not present, local development falls back to
+`private_tables.json`.
 
 ## LinkedIn
 
